@@ -1,0 +1,2609 @@
+---
+title: "Study 3 RQ2"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(here)
+library(dplyr)
+
+# https://stackoverflow.com/questions/26702205/how-to-implement-benjamini-hochberg-in-r
+# Benjamini-Hochberg correction, which allows for the FDR to be selected
+# BH takes p and an FDR as inputs and returns hypothesis tests and 
+# the threshold p value (pCrit)
+BH <- function(p, alpha = 0.05){
+    u <- sort(p)
+    uThresh <- alpha * (1:length(p))/length(p)
+    k <- max(c(which((u<=uThresh)), 0), na.rm = TRUE)
+    pCrit <- u[k]
+    return(list(BHSig = c(rep(TRUE, k), rep(FALSE, length(p)-k))[order(order(p))]
+                , pCrit = pCrit)
+    )
+}
+
+# BHA does the p-value adjustments
+# pNew computes for the adjusted pvalue which is a re-implementation 
+# from p.adjust
+BHA <- function(p){
+    u <- sort(p, decreasing = TRUE)
+    mult <- length(p)/(length(p):1)
+    pNew <- cummin(u*mult)[order(order(-p))]
+    return(pNew)
+}
+
+# Wrap both to get to get a summary
+BHAdjust <- function(p, FDR = 0.05, arr = c("p.orig", "none")){
+    BHP <- BH(p, FDR)
+    p.adj <- BHA(p)
+    p.orig <- p
+    message(paste0("For a ", 
+                   FDR, 
+                   "-level false discovery rate, Threshold p-value = ", 
+                   BHP$pCrit))
+    out <- data.frame(p.orig,
+                      threshold_pvalue = BHP$pCrit,
+                      significant_after_FDR = BHP$BHSig,
+                      p.adj)
+    if(arr == "none"){
+        return(out)
+    } 
+    else {return(out[order(get(arr)),])}
+}
+
+ggplotPredict = function (Model, Data = NULL, Label = NULL, Type = "response") 
+{
+  if (is.null(Data) & class(Model)[1] == "lm") {
+    return(fitted.values(Model))
+  }
+  else {
+    if (is.null(Label)) {
+      PredictName = "Predicted"
+      CILoName = "CILo"
+      CIHiName = "CIHi"
+      SEName = "SE"
+    }
+    else {
+      PredictName = paste0("Predicted", Label)
+      CILoName = paste0("CILo", Label)
+      CIHiName = paste0("CIHi", Label)
+      SEName = paste0("SE", Label)
+    }
+    Predictions = matrix(data = NA, nrow = nrow(Data), ncol = 4, 
+                         dimnames = list(1:nrow(Data), c(PredictName, CILoName, 
+                                                         CIHiName, SEName)))
+    if (class(Model)[1] == "lm") {
+      CILevel = 1 - 2 * pt(c(1), df = Model$df.residual, 
+                           lower.tail = FALSE)
+      Predictions[, 1:3] = predict(Model, newdata = Data, 
+                                   interval = "confidence", level = CILevel)
+      Predictions[, 4] = Predictions[, 1] - Predictions[, 
+                                                        2]
+      Predictions = as.data.frame(Predictions)
+    }
+    if (class(Model)[1] == "glm") {
+      tmpPred = predict(Model, newdata = Data, type = "link", 
+                        se.fit = TRUE)
+      upr <- tmpPred$fit + tmpPred$se.fit
+      lwr <- tmpPred$fit - tmpPred$se.fit
+      fit <- tmpPred$fit
+      if (Type == "response") {
+        fit <- Model$family$linkinv(fit)
+        upr <- Model$family$linkinv(upr)
+        lwr <- Model$family$linkinv(lwr)
+      }
+      Predictions[, 1] = fit
+      Predictions[, 2] = lwr
+      Predictions[, 3] = upr
+      Predictions[, 4] = Predictions[, 1] - Predictions[, 
+                                                        2]
+      Predictions = as.data.frame(Predictions)
+    }
+    if ((class(Model)[1] == "lmerMod") || (class(Model)[1] == 
+                                           "glmerMod")) {
+      Predictions[, c(1, 4)] = predictSE(Model, Data, 
+                                         se.fit = TRUE, type = Type, level = 0, print.matrix = TRUE)
+      Predictions[, 2] = Predictions[, 1] - Predictions[, 
+                                                        4]
+      Predictions[, 3] = Predictions[, 1] + Predictions[, 
+                                                        4]
+    }
+    if (any(names(Data) == PredictName) || any(names(Data) == 
+                                               CILoName) || any(names(Data) == CIHiName) || any(names(Data) == 
+                                                                                                SEName)) {
+      warning("Variable names (Predicted, CILo, CIHi, SE with Label PostFix) used in Data.  These variables removed before merging in predicted values")
+      Data[, c(PredictName, CILoName, CIHiName, SEName)] = list(NULL)
+    }
+    Data = data.frame(Predictions, Data)
+    return(Data)
+  }
+}
+
+
+```
+
+## loading data
+```{r}
+data_boothroyd <- read.csv(here("data", "data_boothroyd.csv")) |> 
+  mutate(entropy_relTOmax = entropy_relTOmax/max_entropy) |> 
+  relocate(entropy_relTOmax, .after = max_entropy)
+```
+
+## updating variables 
+```{r}
+data_boothroyd <- data_boothroyd |> 
+  mutate(intell_t = intelligibility * .975 + .0125,
+         effort_t = effort * (.975/7) + .0125,
+         fatigue_post_t = fatigue_post * (.975/7) + .0125,
+         monolingual = case_match(lang_status, 
+                                    "bilingual" ~ 0,
+                                    "monolingual" ~ 1),
+         # making bilingual as the reference or 0
+         bilingual = case_match(lang_status, 
+                                    "bilingual" ~ 1,
+                                    "monolingual" ~ 0),
+         # making monolingual as the reference or 0
+         stimulus_type_hp = factor(stimulus_type, levels = c("hp", "lp", "zp")), 
+         # making st a factor
+         stimulus_type_lp = factor(stimulus_type, levels = c("lp", "hp", "zp")), 
+         # making st a factor
+         stimulus_type_zp = factor(stimulus_type, levels = c("zp", "lp", "hp")), 
+         # making st a factor
+         kbit2_raw_c = kbit2_raw - mean(kbit2_raw), 
+         # centering nonverbal
+         lextale_raw_c = lextale_raw - mean(lextale_raw), 
+         # centering proficiency
+         aoa_english_c = aoa_english - mean(aoa_english, na.rm = T), 
+         # centering age of acquisition
+         entropy_relTOmax_c = entropy_relTOmax - mean(entropy_relTOmax, na.rm = T), 
+         # centering age of acquisition
+         block_number = factor(block_number, levels = c(1,2,3))) |> 
+         # making block_number a factor  
+  relocate(intell_t, .after = intelligibility) |> 
+  relocate(effort_t, .after = effort) |> 
+  relocate(fatigue_post_t, .after = fatigue_post) |> 
+  relocate(bilingual, .after = lang_status) |> 
+  relocate(monolingual, .after = bilingual) |> 
+  relocate(kbit2_raw_c, .after = kbit2_raw) |> 
+  relocate(lextale_raw_c, .after = lextale_raw) |> 
+  relocate(aoa_english_c, .after = aoa_english) |> 
+  relocate(entropy_relTOmax_c, .after = entropy_relTOmax)
+
+data_boothroyd_b <- data_boothroyd |> 
+  filter(lang_status == "bilingual")
+
+data_boothroyd_m <- data_boothroyd |> 
+  filter(lang_status == "monolingual")
+
+```
+
+### Study 3
+>To quantify the impact of semantic and syntactic sentence structure and listener bilingualism on word recognition, perceived listening effort, and listening fatigue of adult listeners when listening to English monolingual adolescents with dysarthria.
+
+> STATISTICAL PLAN: Word recognition, perceived listening effort, and listener fatigue will be analyzed as separate outcome variables. Thus, for each research question, the statistical analysis will be implemented three times – one for word recognition, one for perceived listening effort, and one for listening fatigue. The dataset will include within subject variables (i.e., utterance type (high predictability/ low predictability/ zero predictability), adult listeners’ language diversity (bilingual/ monolingual), adult listeners’ English proficiency, adult listeners’ language entropy and adult listeners’ order of English acquisition). Thus, mixed-effects regression modelling, with appropriate random intercepts and random effects, will be used to account for non-independence of the predictor variables. Continuous predictors (i.e., adult listeners’ English proficiency, adult listeners’ language entropy and adult listeners’ order of English acquisition) will be centered on the mean. For dichotomous predictors (e.g., adult listeners’ language diversity), dummy coding will be used (e.g., bilingual will be coded as -0.5, and monolingual will be coded as 0.5). The beta distribution will be used to account for an asymmetric distribution commonly observed with proportions, such as word recognition scores (Cribari-Neto & Zeileis, 2010). The normal distribution will be used for analyzing data perceived listening effort and listener fatigue. 
+
+> Discussion with Katie on 20250228: If we take the difference of post-pre fatigue, some values are negative. Possible reasons: listener felt fatigued after the orientation and pretest. It could be that listening using headphones led to lower fatigue. Most of the negative scores are with HP utterances. It is not listener specific –for one listener, only 1 or 2 stimulus type had a negative score(s). Only 1 listener has negative fatigue rating for all stimulus type. *We will just use post fatigue as a negative fatigue value does not make sense.* 
+
+### child speaker demographics Boothroyd
+```{r}
+child_demo_b <- read.csv(here::here("data", "child_demo_boothroyd.csv")) |> 
+  janitor::clean_names()|> 
+  mutate(age_years = round(age_months/12,2)
+         ) |> 
+  select(subject_num, age_months, 
+         age_years, race, ethnicity, sex, 
+         cp_diagnosis, anatomical_involvement, additional_diagnosis,
+         mot_func_parent_rating)
+```
+
+#### race, ethnicity, sex, cp_diagnosis
+```{r}
+child_demo_b |> 
+  pivot_longer(c(race, ethnicity, sex, cp_diagnosis), 
+               names_to = "variable", 
+               values_to = "value") |> 
+  group_by(variable,value) |> 
+  reframe(n = n()) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(full_width = F, html_font = "Times New Roman")
+
+```
+
+#### child age
+```{r}
+child_demo_b |> 
+  reframe(age_mean = mean(age_years),
+         age_sd = sd(age_years),
+         age_min = min(age_years),
+         age_max = max(age_years)) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(full_width = F, html_font = "Times New Roman")
+```
+
+### listener demographics for Boothroyd
+#### race, ethnicity, sex
+```{r}
+data_boothroyd |> 
+  select(listener_id, lang_status, race, eth, sex, highest_degree) |> 
+  distinct(listener_id, .keep_all = T) |> 
+  pivot_longer(c(race, eth, sex, highest_degree), 
+               names_to = "variable", 
+               values_to = "value") |> 
+  group_by(variable, value, lang_status) |> 
+  reframe(n = n()) |> 
+  pivot_wider(names_from = lang_status, values_from = n, 
+              values_fill = 0) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(full_width = F, html_font = "Times New Roman")
+
+```
+
+#### age
+```{r}
+data_boothroyd |> 
+  select(listener_id, lang_status, age) |>
+  distinct(listener_id, .keep_all = T) |> 
+  group_by(lang_status ) |> 
+  reframe(n = n(),
+          age_mean = round(mean(age),2),
+         age_sd = round(sd(age),2),
+         age_min = min(age),
+         age_max = max(age)) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(full_width = F, html_font = "Times New Roman")
+
+
+data_boothroyd |> 
+  select(listener_id, lang_status, age) |>
+  distinct(listener_id, .keep_all = T) |> 
+  group_by(lang_status, age) |> 
+  count()|> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(full_width = F, html_font = "Times New Roman")
+```
+
+
+
+### histogram
+
+> discussion with Katie on March 3rd: If we take the post-pre results, some have negative value. Possible reasons: listener felt fatigued after the orientation and pretest. It could be that listening using headphones led to lower fatigue. Most of the negative scores are with HP utterances. It is not listener specific –for one listener, only 1 or 2 stimulus type had a negative score(s). Only 1 listener has negative fatigue rating for all stimulus type. FINAL DECISION: We will  use post as a negative fatigue value does not make sense. 
+
+> a pre- post- treatment analysis is not appropriate as we are not testing the effectivity of an intervention
+
+```{r}
+rbind(
+      data_boothroyd |> 
+        select(intelligibility, effort, fatigue_post) |> 
+        psych::describe() |> 
+        round(2),
+      data_boothroyd |> 
+        select(intell_t, effort_t, fatigue_post_t) |> 
+        psych::describe() |> 
+        round(2)
+      ) |>   
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+
+```
+
+
+
+###### across stimulus types
+```{r}
+hist(data_boothroyd$intelligibility)
+hist(data_boothroyd$intell_t)
+```
+
+```{r}
+hist(data_boothroyd$effort)
+hist(data_boothroyd$effort_t)
+```
+
+```{r}
+hist(data_boothroyd$fatigue_post)
+hist(data_boothroyd$fatigue_post_t)
+```
+
+
+```{r}
+
+ggplot(data = data_boothroyd, aes(x = intelligibility)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$intelligibility), 
+                                 n = nclass.Sturges(data_boothroyd$intelligibility),
+                                 min.n = 1)) +
+  scale_x_continuous(breaks = seq(0, 1, by = .2), 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) 
+    
+
+ggplot(data = data_boothroyd, aes(effort)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$effort), 
+                                 n = nclass.Sturges(data_boothroyd$effort),
+                                 min.n = 1)) +
+  scale_x_continuous(breaks = seq(0, 6, by = 1), 
+                     limits = c(0,6)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) 
+  
+
+ggplot(data = data_boothroyd, aes(fatigue_post)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$fatigue_post), 
+                                 n = nclass.Sturges(data_boothroyd$fatigue_post),
+                                 min.n = 1)) +
+  scale_x_continuous(breaks = seq(0, 6, by = 1), 
+                     limits = c(0,6) ) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) 
+
+
+
+```
+
+###### across stimulus types
+```{r}
+
+ggplot(data = data_boothroyd, aes(x = intell_t)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$intell_t), 
+                                 n = nclass.Sturges(data_boothroyd$intell_t),
+                                 min.n = 1)) +
+  scale_x_continuous(breaks = seq(0, 1, by = .2), 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) 
+    
+
+ggplot(data = data_boothroyd, aes(effort_t)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$effort_t), 
+                                 n = nclass.Sturges(data_boothroyd$effort_t),
+                                 min.n = 1)) +
+  scale_x_continuous(breaks = seq(0, 1, by = .2), 
+                     limits = c(0,1)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) 
+  
+
+ggplot(data = data_boothroyd, aes(fatigue_post_t)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$fatigue_post_t), 
+                                 n = nclass.Sturges(data_boothroyd$fatigue_post_t),
+                                 min.n = 1)) +
+  scale_x_continuous(breaks = seq(0, 1, by = .2), 
+                     limits = c(0,1) ) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) 
+
+
+
+```
+
+```{r}
+
+ggplot(data = data_boothroyd, aes(intelligibility)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 breaks = pretty(range(data_boothroyd$intelligibility), 
+                                 n = nclass.Sturges(data_boothroyd$intelligibility),
+                                 min.n = 1)) +
+  geom_density(alpha=0.2)
+    
+
+ggplot(data = data_boothroyd, aes(effort)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 breaks = pretty(range(data_boothroyd$effort), 
+                                 n = nclass.Sturges(data_boothroyd$effort),
+                                 min.n = 1)) +
+  geom_density(alpha=0.2)
+  
+
+ggplot(data = data_boothroyd, aes(fatigue_post)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 breaks = pretty(range(data_boothroyd$fatigue_post), 
+                                 n = nclass.Sturges(data_boothroyd$fatigue_post),
+                                 min.n = 1)) +
+  geom_density(alpha=0.2)
+
+
+
+```
+
+###### by stimulus types
+```{r}
+
+ggplot(data = data_boothroyd, aes(x = intelligibility)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$intelligibility), 
+                                 n = nclass.Sturges(data_boothroyd$intelligibility),
+                                 min.n = 1)) +
+  facet_wrap(~stimulus_type) 
+    
+
+ggplot(data = data_boothroyd, aes(effort)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$effort), 
+                                 n = nclass.Sturges(data_boothroyd$effort),
+                                 min.n = 1)) +
+  facet_wrap(~stimulus_type) 
+  
+
+ggplot(data = data_boothroyd, aes(fatigue_post)) +
+  geom_histogram(breaks = pretty(range(data_boothroyd$fatigue_post), 
+                                 n = nclass.Sturges(data_boothroyd$fatigue_post),
+                                 min.n = 1)) +
+  facet_wrap(~stimulus_type) 
+```
+
+
+##### ---- 
+
+### RQ2
+
+> Within bilingual adult listeners and within monolingual adult listeners, do listeners with greater proficiency on vocabulary knowledge have better word recognition scores, lower perceived listening effort, and lower fatigue ratings for each of three linguistically different utterance types? Is the effect of proficiency greater for bilingual adult listeners versus monolingual adult listeners?
+
+
+> STATISTICAL PLAN: Target outcome variable (i.e., word recognition scores, perceived listening effort ratings or listening fatigue ratings) will be regressed on English proficiency scores (main predictor), adult listener type (bilingual vs. monolingual), utterance types (high predictability vs. low predictability vs. zero predictability), two-way interaction between adult listener type and English proficiency scores, and two-way interaction between utterance types and English proficiency scores. 
+
+##### descriptive statistics: proficency 
+```{r}
+data_boothroyd |> 
+  group_by(lang_status) |> 
+  reframe(n = n(),
+          proficiency_mean = round(mean(lextale_raw),2),
+          proficiency_sd = round(sd(lextale_raw),2),
+          proficiency_median = round(median(lextale_raw),2),
+          proficiency_min = round(min(lextale_raw),2),
+          proficiency_max = round(max(lextale_raw),2)) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+
+```
+
+##### ---- 
+
+##### graph: word recognition score/ intelligibility  
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_point(aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 colour = lang_status),
+             #position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  geom_smooth(aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 colour = lang_status), 
+              method = "loess") +
+  labs(x = "Language proficiency",
+       y = "Word recognition scores") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") 
+  
+```
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+#  geom_smooth(aes(y = intelligibility, 
+#                  x = lextale_raw,
+#                  colour = lang_status),
+#              method = "lm",) +
+  geom_point(aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 colour = lang_status),
+             #position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  labs(x = "Language proficiency",
+       y = "Word recognition scores") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  facet_grid(~stimulus_type)
+  
+```
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_smooth(aes(y = intelligibility, 
+                  x = lextale_raw, 
+                  color = stimulus_type, 
+                  group = stimulus_type),
+              method = "lm") +
+  geom_point(aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 color = stimulus_type, 
+                 group = stimulus_type),
+             position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  labs(x = "Language proficiency",
+       y = "Word recognition scores",
+       color = "Utterance type") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73")) +
+  facet_grid(rows = vars(lang_status),
+             cols = vars(stimulus_type))
+  
+```
+
+
+##### model: word recognition score/ intelligibility  
+
+###### checking value add of using dispersion, which variable
+```{r}
+rq2_intell1  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family()) 
+
+rq2_intell2  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_intell3  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_intell4  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_intell5  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual + lextale_raw_c,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+rq2_intell6  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_intell7  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp + bilingual,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+
+
+AIC(rq2_intell1, rq2_intell2, rq2_intell3, rq2_intell4, rq2_intell5, 
+    rq2_intell6, rq2_intell7) |> 
+  arrange(AIC)
+
+bbmle::AICtab(rq2_intell1, rq2_intell2, rq2_intell3, rq2_intell4, 
+              rq2_intell5, rq2_intell6, rq2_intell7)
+
+```
+
+
+###### setting up model
+```{r}
+#HP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell_hp_b <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_hp_b)
+
+```
+
+```{r}
+#LP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell_lp_b <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_lp +
+                                    bilingual:stimulus_type_lp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_lp +
+                                    bilingual:lextale_raw_c:stimulus_type_lp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_lp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_lp_b)
+```
+
+```{r}
+#ZP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell_zp_b <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_zp +
+                                    bilingual:stimulus_type_zp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_zp +
+                                    bilingual:lextale_raw_c:stimulus_type_zp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_zp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_zp_b)
+
+
+
+```
+
+
+```{r}
+#monolingual = bilingual 0; monolingual 1; other coef pertain to bilinguals
+rq2_intell_hp_m <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + lextale_raw_c + stimulus_type_hp +
+                                    monolingual:lextale_raw_c +
+                                    monolingual:stimulus_type_hp +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    monolingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_hp_m)
+
+```
+
+```{r}
+#LP utterances as reference
+#bilingual = bilingual 0; monolingual 1; other coef pertain to bilinguals
+rq2_intell_lp_m <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + lextale_raw_c + stimulus_type_lp +
+                                    monolingual:lextale_raw_c +
+                                    monolingual:stimulus_type_lp +
+                                    lextale_raw_c:stimulus_type_lp +
+                                    monolingual:lextale_raw_c:stimulus_type_lp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_lp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_lp_m)
+```
+
+```{r}
+#ZP utterances as reference
+#bilingual = bilingual 0; monolingual 1; other coef pertain to bilinguals
+rq2_intell_zp_m <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + lextale_raw_c + stimulus_type_zp +
+                                    monolingual:lextale_raw_c +
+                                    monolingual:stimulus_type_zp +
+                                    lextale_raw_c:stimulus_type_zp +
+                                    monolingual:lextale_raw_c:stimulus_type_zp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_zp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_zp_m)
+```
+
+###### hypothesis testing 
+```{r}
+pairs(emmeans::emmeans(rq2_intell_hp_b, ~ stimulus_type_hp | lextale_raw_c + bilingual))
+```
+
+
+
+```{r}
+car::Anova(rq2_intell_hp_b, type = "III")
+car::Anova(rq2_intell_lp_b, type = "III")
+car::Anova(rq2_intell_zp_b, type = "III")
+car::Anova(rq2_intell_hp_m, type = "III")
+car::Anova(rq2_intell_lp_m, type = "III")
+car::Anova(rq2_intell_zp_m, type = "III")
+
+# lextale_raw_c testing effect of proficiency is 0
+# bilingual:lextale_raw_c  testing if effect of proficiency is different for bilingual vs monolinguals
+```
+
+###### Benjamini-Hochberg
+
+```{r}
+rq2_intell_h_adj <- rbind(
+car::Anova(rq2_intell_hp_b, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_b, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "HP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c" |
+           variable == "bilingual:lextale_raw_c" | 
+           variable == "lextale_raw_c:stimulus_type_hp" |
+           variable == "bilingual:lextale_raw_c:stimulus_type_hp" ) |> 
+    mutate(lang_status = ifelse(variable == "bilingual:lextale_raw_c" |
+                                variable == "bilingual:lextale_raw_c:stimulus_type_hp", 
+                                NA, lang_status),
+           stimulus_type = ifelse(variable == "lextale_raw_c:stimulus_type_hp"|
+                                variable == "bilingual:lextale_raw_c:stimulus_type_hp", 
+                                  NA, stimulus_type)),
+
+car::Anova(rq2_intell_lp_b, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_b, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "LP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c" |
+           variable == "bilingual:lextale_raw_c") |> 
+    mutate(lang_status = ifelse(variable == "bilingual:lextale_raw_c", 
+                                NA, lang_status)),
+
+car::Anova(rq2_intell_zp_b, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_b, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "ZP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c" |
+           variable == "bilingual:lextale_raw_c") |> 
+    mutate(lang_status = ifelse(variable == "bilingual:lextale_raw_c", 
+                                NA, lang_status)),
+
+car::Anova(rq2_intell_hp_m, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_m, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "HP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c" |
+           variable == "lextale_raw_c:stimulus_type_hp") |> 
+    mutate(stimulus_type = ifelse(variable == "lextale_raw_c:stimulus_type_hp", 
+                                  NA, stimulus_type)),
+
+car::Anova(rq2_intell_lp_m, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_m, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "LP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c"),
+
+car::Anova(rq2_intell_zp_m, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_m, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "ZP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c")
+
+) |>
+mutate(variable = factor(variable, levels = 
+                               c("lextale_raw_c",
+                                 "lextale_raw_c:stimulus_type_hp",
+                                 "bilingual:lextale_raw_c",
+                                 "bilingual:lextale_raw_c:stimulus_type_hp")),
+       lang_status = factor(lang_status, levels = c("Bilingual", 
+                                                    "Monolingual")),
+       stimulus_type = factor(stimulus_type, levels = c("HP", "LP", "ZP"))) |> 
+mutate(p.adj = p.adjust(p.orig, method = "BH"))
+  
+
+rq2_intell_h_adj <- merge(rq2_intell_h_adj, 
+      BHAdjust(rq2_intell_h_adj$p.orig, FDR = 0.05, arr = "p.orig"),
+      all = T)  |> 
+  arrange(variable) |> 
+  relocate(c(p.orig, p.adj), .after = Df) |> 
+  mutate(pvalue_text = if_else(round(p.orig,3) == 0, "< .001", 
+                                as.character(round(p.orig,3))),
+         fdr_pvalue_text = if_else(round(p.adj,3) == 0, "< .001", 
+                                    as.character(round(p.adj,3))),
+         p.orig = format(p.orig, digits = 9),
+         p.adj = format(p.adj, digits = 9),) |> 
+arrange(stimulus_type) |> 
+arrange(lang_status) |> 
+arrange(variable) 
+
+view(rq2_intell_h_adj) 
+
+rq2_intell_h_adj |> 
+  select(variable, lang_status, stimulus_type, Chisq, Df, 
+         pvalue_text, fdr_pvalue_text) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+
+
+```
+
+###### extracting exp(coef)
+```{r}
+rq2_intell_exp <- rbind(
+  summary(rq2_intell_hp_b)$coef$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq2_intell_hp_b)$coefficients$cond),
+           stimulus_type = "hp", 
+           lang_status = "monolingual") |> 
+    filter(variable == "lextale_raw_c") |> 
+    relocate(variable, .before = Estimate) |> 
+    relocate(lang_status, .before = Estimate) |> 
+    relocate(stimulus_type, .before = Estimate),
+  
+  summary(rq2_intell_lp_b)$coef$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq2_intell_lp_b)$coefficients$cond),
+           stimulus_type = "lp", 
+           lang_status = "monolingual") |> 
+    filter(variable == "lextale_raw_c") |> 
+    relocate(variable, .before = Estimate) |> 
+    relocate(lang_status, .before = Estimate) |> 
+    relocate(stimulus_type, .before = Estimate),
+  
+  summary(rq2_intell_zp_b)$coef$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq2_intell_zp_b)$coefficients$cond),
+           stimulus_type = "zp", 
+           lang_status = "monolingual") |> 
+    filter(variable == "lextale_raw_c") |> 
+    relocate(variable, .before = Estimate) |> 
+    relocate(lang_status, .before = Estimate) |> 
+    relocate(stimulus_type, .before = Estimate),
+  
+  summary(rq2_intell_hp_m)$coef$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq2_intell_hp_b)$coefficients$cond),
+           stimulus_type = "hp", 
+           lang_status = "bilingual") |> 
+    filter(variable == "lextale_raw_c") |> 
+    relocate(variable, .before = Estimate) |> 
+    relocate(lang_status, .before = Estimate) |> 
+    relocate(stimulus_type, .before = Estimate),
+  
+  summary(rq2_intell_lp_m)$coef$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq2_intell_lp_m)$coefficients$cond),
+           stimulus_type = "lp", 
+           lang_status = "bilingual") |> 
+    filter(variable == "lextale_raw_c") |> 
+    relocate(variable, .before = Estimate) |> 
+    relocate(lang_status, .before = Estimate) |> 
+    relocate(stimulus_type, .before = Estimate),
+  
+  summary(rq2_intell_zp_m)$coef$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq2_intell_zp_m)$coefficients$cond),
+           stimulus_type = "zp", 
+           lang_status = "bilingual") |> 
+    filter(variable == "lextale_raw_c") |> 
+    relocate(variable, .before = Estimate) |> 
+    relocate(lang_status, .before = Estimate) |> 
+    relocate(stimulus_type, .before = Estimate)
+) |> 
+  mutate(`Exponentiated coefficient` = round(exp(Estimate),2),
+         Estimate = round(Estimate, 2),
+         Std..Error = round(Std..Error, 2),
+         z.value = round(z.value,2),
+         `p-value` = if_else(round(Pr...z..,3) == 0, "< .001", 
+                                as.character(round(Pr...z..,3)))
+  ) |> 
+  rename(`Coefficient` = Estimate) |> 
+  rename(`Standard Error` = Std..Error) |> 
+  rename(`z-value` = z.value) |> 
+  rename(`Language Status` = lang_status) |> 
+  rename(`Utterance type` = stimulus_type) |> 
+  relocate(`Exponentiated coefficient`, .after = `Standard Error`) |> 
+  select(-c(Pr...z.., variable))
+
+view(rq2_intell_exp)
+
+rq2_intell_exp |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
+
+
+
+
+
+###### contrast testing: marginal means reponses
+
+```{r}
+emmeans::ref_grid(rq2_intell_hp_b)
+
+#getting marginal means given average, min and max lextale scores 
+rg_rq2 <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
+                                      c(mean(data_boothroyd$lextale_raw) - 
+                                          sd(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw) +
+                                          sd(data_boothroyd$lextale_raw)
+                                        )))
+                            
+
+rq2_intell_pred <- emmeans::emmeans(rg_rq2, ~ stimulus_type_hp * lextale_raw_c |
+                                      bilingual,
+                                      type = "response") 
+
+
+# Compute contrast to find effect size between levels
+contrast_result <- emmeans::contrast(rq2_intell_pred, method = "pairwise")
+summary(contrast_result)
+```
+
+###### graph: marginal means reponses
+
+```{r}
+emmeans::ref_grid(rq2_intell_hp_b)
+
+#getting marginal means given average, min and max lextale scores 
+rg_rq2 <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
+                                      c(mean(data_boothroyd$lextale_raw) - 
+                                          sd(data_boothroyd$lextale_raw) * 3,
+                                        mean(data_boothroyd$lextale_raw) - 
+                                          sd(data_boothroyd$lextale_raw) * 2,
+                                        mean(data_boothroyd$lextale_raw) - 
+                                          sd(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw) +
+                                          sd(data_boothroyd$lextale_raw),
+                                        100
+                                        )))
+                            
+
+rq2_intell_graph <- emmeans::emmeans(rg_rq2, ~ stimulus_type_hp * lextale_raw_c *
+                                      bilingual,
+                                      type = "response") |> 
+  as.data.frame() |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         response = round((response - .0125) / (.975),2),
+         SE = round((SE- .0125) / (.975),2),
+         asymp.LCL = round((asymp.LCL- .0125) / (.975),2),
+         asymp.UCL = round((asymp.UCL- .0125) / (.975),2)) 
+
+view(rq2_intell_graph)
+```
+
+
+```{r}
+sig_text <- data.frame(lextale_raw_c = c(58, 58, 58),
+                       response = c(.97, .82, .67),
+                       bilingual = c("Bilingual","Bilingual","Bilingual"),
+                       lab = c("*","*","*"))
+
+data_boothroyd |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual")) |> 
+  ggplot() +
+  geom_point(
+             aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 colour = stimulus_type),
+             alpha = .5) +
+  geom_smooth(data = rq2_intell_graph,
+              aes(y = response, 
+                  ymin = response - SE,
+                  ymax = response + SE,
+                  x = lextale_raw_c, 
+                  colour = stimulus_type_hp),
+             alpha = .2,
+             stat = "identity") +
+  geom_text(data = sig_text, 
+            aes(y = response, 
+                x = lextale_raw_c),
+            label = c("*","*","*")) +
+  labs(x = "Vocabulary knowledge proficiency (LexTALE scores)",
+       y = "Word recognition scores",
+       color = "Utterance type") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  facet_wrap(~bilingual) +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73"))
+```
+
+```{r}
+sig_text <- data.frame(lextale_raw_c = c(58, 58, 58),
+                       response = c(1, .82, 67),
+                       bilingual = c("Bilingual","Bilingual","Bilingual"),
+                       lab = c("*","*","*",))
+
+  ggplot() +
+  geom_smooth(data = rq2_intell_graph,
+              aes(y = response, 
+                  ymin = response - SE,
+                  ymax = response + SE,
+                  x = lextale_raw_c, 
+                  colour = stimulus_type_hp),
+             alpha = .2,
+             stat = "identity") +
+  labs(x = "Vocabulary knowledge proficiency (LexTALE scores)",
+       y = "Word recognition scores \n (Estimated marginal means)",
+       color = "Utterance type") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  facet_wrap(~bilingual) +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73"))
+```
+
+###### table HP-LP difference
+```{r}
+rg_rq2 <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
+                                      c(mean(data_boothroyd$lextale_raw) - 
+                                          sd(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw) +
+                                          sd(data_boothroyd$lextale_raw)
+                                        )))
+                            
+
+rq2_intell_pred <- emmeans::emmeans(rg_rq2, ~ stimulus_type_hp * lextale_raw_c |
+                                      bilingual,
+                                      type = "response") |> 
+  as.data.frame() |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         response = round((response - .0125) / (.975),2),
+         SE = round((SE- .0125) / (.975),2),
+         asymp.LCL = round((asymp.LCL- .0125) / (.975),2),
+         asymp.UCL = round((asymp.UCL- .0125) / (.975),2)) |> 
+  select(-df) |> 
+  pivot_wider(names_from = c(stimulus_type_hp),
+              values_from = c(response, SE, asymp.LCL, asymp.UCL)) |> 
+  mutate(`HP-LP difference` = response_hp - response_lp,
+         `HP-ZP difference` = response_hp - response_zp,
+         `LP-ZP difference` = response_lp - response_zp,
+         lextale_raw_c = round(lextale_raw_c,2),
+         ` ` = c("-1SD", "Mean", "+1SD", "-1SD", "Mean", "+1SD")) |>
+  rename(`Language Status` = bilingual) |> 
+  rename(`LexTALE scores` = lextale_raw_c) |> 
+  select(` `, `LexTALE scores`, `Language Status`, `HP-LP difference`,
+         `HP-ZP difference`, `LP-ZP difference`)
+  
+
+view(rq2_intell_pred)
+
+rq2_intell_pred |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
+
+###### table Sd Mean difference 
+```{r}
+rg_rq2 <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
+                                      c(mean(data_boothroyd$lextale_raw) - 
+                                          sd(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw),
+                                        mean(data_boothroyd$lextale_raw) +
+                                          sd(data_boothroyd$lextale_raw)
+                                        )))
+                            
+
+rq2_intell_pred <- emmeans::emmeans(rg_rq2, ~ stimulus_type_hp * lextale_raw_c *
+                                      bilingual,
+                                      type = "response") |> 
+  as.data.frame() |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         response = round((response - .0125) / (.975),2),
+         SE = round((SE- .0125) / (.975),2),
+         asymp.LCL = round((asymp.LCL- .0125) / (.975),2),
+         asymp.UCL = round((asymp.UCL- .0125) / (.975),2)) |> 
+  select(-df) |> 
+  mutate(lextale_raw_c = round(lextale_raw_c,2)) |>  
+  pivot_wider(names_from = c(lextale_raw_c),
+              values_from = c(response, SE, asymp.LCL, asymp.UCL)) |> 
+  mutate(`-1SD - Mean difference` = response_76.9 - response_88.05,
+         `Mean - +SD difference` = response_88.05 - response_99.2) |>
+  rename(`Language Status` = bilingual) |> 
+  rename(`Utterance type` = stimulus_type_hp) |> 
+  rename(`Intell based on -1SD of LexTALE scores` = response_76.9) |> 
+  rename(`Intell based on Mean of LexTALE scores` = response_88.05) |> 
+  rename(`Intell based on +1SD of LexTALE scores` = response_99.2) |> 
+  select(`Utterance type`, 
+         `Language Status`, 
+         `Intell based on -1SD of LexTALE scores`,
+         `Intell based on Mean of LexTALE scores`,
+         `Intell based on +1SD of LexTALE scores`,
+         `-1SD - Mean difference`,
+         `Mean - +SD difference`)
+  
+
+view(rq2_intell_pred)
+
+rq2_intell_pred |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
+###### graph: marginal means reponses (between 0 to 100)
+```{r}
+#getting marginal means given lextale scores between 0 to 100 by 1; average nonverbal 
+rg_rq2 <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
+                                                         seq(60,100, by = 1.25)))
+                            #rg.limit = 20000)
+
+rq2_intell_pred <- emmeans::emmeans(rg_rq2, ~ stimulus_type_hp * lextale_raw_c |
+                                      bilingual,
+                                      type = "response") |> 
+  as.data.frame() |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         response = (response - .0125) / (.975),
+         SE = (SE- .0125) / (.975),
+         asymp.LCL = (asymp.LCL- .0125) / (.975),
+         asymp.UCL = (asymp.UCL- .0125) / (.975)) 
+
+
+view(rq2_intell_pred)
+
+
+```
+
+
+
+```{r}
+data_boothroyd |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual")) |> 
+  ggplot() +
+  geom_point(
+             aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 colour = stimulus_type),
+             #position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  geom_smooth(data = rq2_intell_pred,
+              aes(y = response, 
+                  ymin = response - SE,
+                  ymax = response + SE,
+                  x = lextale_raw_c, 
+                  colour = stimulus_type_hp),
+             alpha = .2,
+             stat = "identity") +
+             #method = "lm",
+             #se =T) +
+  labs(x = "Language proficiency (LexTALE scores)",
+       y = "Word recognition scores \n (Estimated marginal means)",
+       color = "Utterance type") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  #scale_x_continuous(breaks = seq(60, 100, by = 1.25), 
+  #                   limits = seq(60, 100, by = 1.25)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  facet_wrap(~bilingual) +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73"))
+```
+
+###### to be deleted (?)
+```{r}
+rq2_intell_pred |> 
+  ggplot() +
+  geom_smooth(aes(y = response, 
+                  ymin = response - SE,
+                  ymax = response + SE,
+                  x = lextale_raw_c, 
+                  colour = stimulus_type_hp),
+             alpha = .5,
+             stat = "identity") +
+  facet_wrap(~bilingual)
+  
+
+emmeans::emmip(rg_rq2, ~ bilingual* lextale_raw_c,
+                                    type = "response")
+
+
+predict(rg_rq2_intell2, interval = "prediction", type = "response") |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         prediction = round((prediction - .0125) / (.975),2),
+         SE = round((SE- .0125) / (.975),2),
+         upper.PL = round((upper.PL - .0125) / (.975),2),
+         lower.PL = round((lower.PL - .0125) / (.975),2)) |> 
+  ggplot() +
+  geom_smooth(aes(y = prediction, 
+                  ymin = prediction - SE,
+                  ymax = prediction + SE,
+                  x = lextale_raw_c, 
+                  colour = stimulus_type_hp),
+             alpha = .5,
+             stat = "identity") +
+  facet_wrap(~bilingual)
+```
+
+```{r}
+newdata <- expand.grid(kbit_raw_c = 78.3959,
+                       bilingual = c(0,1),
+                       lextale_raw_c = seq(min(data_boothroyd$lextale_raw), 
+                                           max(data_boothroyd$lextale_raw), 
+                                           length.out = 50),
+                       stimulus_type_hp = factor(c("hp", "lp", "zp"), 
+                                                 levels = c("hp", "lp", "zp")))
+
+broom.mixed::augment(rq2_intell_hp_b, 
+                     newdata = newdata, 
+                     type.predict = "link",
+                     se_fit = TRUE) |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual")) |>
+  ggplot() +
+  geom_smooth(aes(y = .fitted, 
+                  x = lextale_raw_c, 
+                  colour = bilingual),
+             alpha = .5,
+             mothrod ="lm") +
+  facet_wrap(~stimulus_type_hp)
+```
+
+```{r}
+ggeffects::ggpredict(rq2_intell_hp_b, terms = c("bilingual","lextale_raw_c", "stimulus_type_hp"))
+```
+
+
+
+##### ----
+
+##### graph: effort 
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_point(aes(y = effort, 
+                 x = lextale_raw, 
+                 colour = lang_status),
+             #position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+   geom_smooth(aes(y = effort, 
+                 x = lextale_raw, 
+                 colour = lang_status), 
+              method = "loess") +
+   geom_smooth(aes(y = effort, 
+                 x = lextale_raw, 
+                 colour = lang_status), 
+              method = "loess") +
+  labs(x = "Language proficiency",
+       y = "Listening effort") +
+  scale_y_continuous(breaks = seq(0, 6, by = 1), oob = scales::squish, 
+                     limits = c(0,6)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") 
+  
+```
+
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_point(aes(y = effort, 
+                 x = lextale_raw, 
+                 colour = lang_status),
+             #position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  labs(x = "Language proficiency",
+       y = "Listening effort") +
+  scale_y_continuous(breaks = seq(0, 6, by = 1), oob = scales::squish, 
+                     limits = c(0,6)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  facet_wrap(~stimulus_type)
+  
+```
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_smooth(aes(y = effort, 
+                  x = lextale_raw, 
+                  color = stimulus_type, 
+                  group = stimulus_type),
+              method = "lm") +
+  geom_point(aes(y = effort, 
+                 x = lextale_raw, 
+                 color = stimulus_type, 
+                 group = stimulus_type),
+             position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  labs(x = "Language proficiency",
+       y = "Listening effort",
+       color = "Utterance type") +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73")) +
+  facet_grid(rows = vars(lang_status),
+             cols = vars(stimulus_type))
+  
+```
+
+##### model: effort
+
+###### checking value add of using dispersion, which variable
+```{r}
+rq2_effort1  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family()) 
+
+rq2_effort2  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_effort3  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_effort4  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_effort5  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual + lextale_raw_c,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+rq2_effort6  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_effort7  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp + bilingual,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+
+
+AIC(rq2_effort1, rq2_effort2, rq2_effort3, rq2_effort4, rq2_effort5, 
+    rq2_effort6, rq2_effort7) |> 
+  arrange(AIC)
+
+bbmle::AICtab(rq2_effort1, rq2_effort2, rq2_effort3, rq2_effort4, 
+              rq2_effort5, rq2_effort6, rq2_effort7)
+
+```
+
+###### setting up model
+```{r}
+#bilingual = bilingual 1; monolingual 0
+rq2_effort_hp_b <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    #bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_effort_hp_b_NOc <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw + block_number +
+                                    bilingual + lextale_raw + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw +
+                                    lextale_raw:stimulus_type_hp +
+                                    #bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_effort_hp_b)
+
+
+
+```
+
+
+##### ----
+
+##### graph: fatigue
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_point(aes(y = fatigue_post, 
+                 x = lextale_raw, 
+                 colour = lang_status),
+             #position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  labs(x = "Language proficiency",
+       y = "Listening fatigue") +
+  scale_y_continuous(breaks = seq(0, 6, by = 1), oob = scales::squish, 
+                     limits = c(0,6)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") 
+  
+```
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_point(aes(y = fatigue_post, 
+                 x = lextale_raw, 
+                 colour = lang_status),
+             #position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  labs(x = "Language proficiency",
+       y = "Listening fatigue") +
+  scale_y_continuous(breaks = seq(0, 6, by = 1), oob = scales::squish, 
+                     limits = c(0,6)) +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  facet_wrap(~stimulus_type)
+  
+```
+
+```{r}
+data_boothroyd |> 
+  ggplot() +
+  geom_smooth(aes(y = fatigue_post, 
+                  x = lextale_raw, 
+                  color = stimulus_type, 
+                  group = stimulus_type),
+              method = "lm") +
+  geom_point(aes(y = fatigue_post, 
+                 x = lextale_raw, 
+                 color = stimulus_type, 
+                 group = stimulus_type),
+             position=position_jitterdodge(jitter.width=0.1),
+             alpha = .5) +
+  labs(x = "Language proficiency",
+       y = "Listening fatigue",
+       color = "Utterance type") +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        legend.position = "top") +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73")) +
+  facet_grid(rows = vars(lang_status),
+             cols = vars(stimulus_type))
+  
+```
+
+##### model: fatigue
+
+###### checking value add of using dispersion, which variable
+```{r}
+rq2_fatigue_post1  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family()) 
+
+rq2_fatigue_post2  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_fatigue_post3  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_fatigue_post4  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_fatigue_post5  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual + lextale_raw_c,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+rq2_fatigue_post6  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ bilingual + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_fatigue_post7  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp + bilingual,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+
+
+AIC(rq2_fatigue_post1, rq2_fatigue_post2, rq2_fatigue_post3, rq2_fatigue_post4, rq2_fatigue_post5, 
+    rq2_fatigue_post6, rq2_fatigue_post7) |> 
+  arrange(AIC)
+
+bbmle::AICtab(rq2_fatigue_post1, rq2_fatigue_post2, rq2_fatigue_post3, rq2_fatigue_post4, 
+              rq2_fatigue_post5, rq2_fatigue_post6, rq2_fatigue_post7)
+
+```
+
+###### setting up model
+```{r}
+#bilingual = bilingual 1; monolingual 0
+rq2_fatigue_post_hp_b <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    #bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+rq2_fatigue_post_hp_b_NOc <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw + block_number +
+                                    bilingual + lextale_raw + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw +
+                                    lextale_raw:stimulus_type_hp +
+                                    #bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_fatigue_post_hp_b)
+
+
+
+```
+
+
+##### ----
+#----- extra ----
+
+```{r}
+# Calculate 95% confidence intervals
+new_data$lower <- new_data$fit - 1.96 * new_data$se
+new_data$upper <- new_data$fit + 1.96 * new_data$se
+
+
+
+#getting model variance 
+rg_rq2_intell <- emmeans::ref_grid(rq2_intell_hp_b)
+rg_rq2_intell@misc$sigma
+glmmTMB::VarCorr(rq2_intell_hp_b)
+rg_rq2_intell <- update(rg_rq2_intell, sigma = sqrt(0.28914^2 + 1.51212^2))
+
+predict(rg_rq2_intell, interval = "prediction", type = "response") |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         prediction = round((prediction - .0125) / (.975),2),
+         SE = round((SE- .0125) / (.975),2),
+         upper.PL = round((upper.PL - .0125) / (.975),2),
+         lower.PL = round((lower.PL - .0125) / (.975),2))
+
+
+rg_rq2@misc$sigma
+glmmTMB::VarCorr(rq2_intell_hp_b)
+rg_rq2_intell2 <- update(rg_rq2, sigma = sqrt(0.28914^2 + 1.51212^2))
+predict(rg_rq2_intell2, interval = "prediction", type = "response") |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         prediction = round((prediction - .0125) / (.975),2),
+         SE = round((SE- .0125) / (.975),2),
+         upper.PL = round((upper.PL - .0125) / (.975),2),
+         lower.PL = round((lower.PL - .0125) / (.975),2))
+```
+
+
+###### setting up model
+```{r}
+#HP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell2_hp_b <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    #bilingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell2_hp_b)
+```
+
+```{r}
+#LP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell2_lp_b <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_lp +
+                                    bilingual:stimulus_type_lp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_lp +
+                                    #bilingual:lextale_raw_c:stimulus_type_lp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_lp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell2_lp_b)
+```
+
+```{r}
+#ZP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell2_zp_b <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + lextale_raw_c + stimulus_type_zp +
+                                    bilingual:stimulus_type_zp +
+                                    bilingual:lextale_raw_c +
+                                    lextale_raw_c:stimulus_type_zp +
+                                    #bilingual:lextale_raw_c:stimulus_type_zp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_zp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell2_zp_b)
+
+
+
+```
+
+
+```{r}
+#monolingual = bilingual 0; monolingual 1; other coef pertain to bilinguals
+rq2_intell2_hp_m <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + lextale_raw_c + stimulus_type_hp +
+                                    monolingual:lextale_raw_c +
+                                    monolingual:stimulus_type_hp +
+                                    lextale_raw_c:stimulus_type_hp +
+                                    #monolingual:lextale_raw_c:stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell2_hp_m)
+
+```
+
+```{r}
+#LP utterances as reference
+#bilingual = bilingual 0; monolingual 2; other coef pertain to bilinguals
+rq2_intell2_lp_m <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + lextale_raw_c + stimulus_type_lp +
+                                    monolingual:lextale_raw_c +
+                                    monolingual:stimulus_type_lp +
+                                    lextale_raw_c:stimulus_type_lp +
+                                    #monolingual:lextale_raw_c:stimulus_type_lp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_lp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell2_lp_m)
+```
+
+```{r}
+#ZP utterances as reference
+#bilingual = bilingual 0; monolingual 2; other coef pertain to bilinguals
+rq2_intell2_zp_m <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + lextale_raw_c + stimulus_type_zp +
+                                    monolingual:lextale_raw_c +
+                                    monolingual:stimulus_type_zp +
+                                    lextale_raw_c:stimulus_type_zp +
+                                    #monolingual:lextale_raw_c:stimulus_type_zp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ lextale_raw_c + stimulus_type_zp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell2_zp_m)
+```
+
+###### hypothesis testing 
+
+```{r}
+pairs(emmeans::emmeans(rq2_intell2_hp_b, ~ bilingual | lextale_raw_c + stimulus_type_hp))
+```
+
+```{r}
+car::Anova(rq2_intell2_hp_b, type = "III")
+car::Anova(rq2_intell2_lp_b, type = "III")
+car::Anova(rq2_intell2_zp_b, type = "III")
+car::Anova(rq2_intell2_hp_m, type = "III")
+car::Anova(rq2_intell2_lp_m, type = "III")
+car::Anova(rq2_intell2_zp_m, type = "III")
+
+# lextale_raw_c testing effect of proficiency is 0
+# bilingual:lextale_raw_c  testing if effect of proficiency is different for bilingual vs monolinguals
+```
+
+###### Benjamini-Hochberg
+
+```{r}
+rq2_intell2_h_adj <- rbind(
+car::Anova(rq2_intell2_hp_b, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell2_hp_b, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "HP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c" |
+           variable == "bilingual:lextale_raw_c" | 
+           variable == "lextale_raw_c:stimulus_type_hp" |
+           variable == "bilingual:lextale_raw_c:stimulus_type_hp" ) |> 
+    mutate(lang_status = ifelse(variable == "bilingual:lextale_raw_c" |
+                                variable == "bilingual:lextale_raw_c:stimulus_type_hp", 
+                                NA, lang_status),
+           stimulus_type = ifelse(variable == "lextale_raw_c:stimulus_type_hp"|
+                                variable == "bilingual:lextale_raw_c:stimulus_type_hp", 
+                                  NA, stimulus_type)),
+
+car::Anova(rq2_intell2_lp_b, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell2_hp_b, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "LP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c"),
+
+car::Anova(rq2_intell2_zp_b, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell2_hp_b, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "ZP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c"),
+
+car::Anova(rq2_intell2_hp_m, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell2_hp_m, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "HP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c" ),
+
+car::Anova(rq2_intell2_lp_m, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell2_hp_m, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "LP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c"),
+
+car::Anova(rq2_intell2_zp_m, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell2_hp_m, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "ZP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "lextale_raw_c")
+
+) |>
+mutate(variable = factor(variable, levels = 
+                               c("lextale_raw_c",
+                                 "lextale_raw_c:stimulus_type_hp",
+                                 "bilingual:lextale_raw_c",
+                                 "bilingual:lextale_raw_c:stimulus_type_hp")),
+       lang_status = factor(lang_status, levels = c("Bilingual", 
+                                                    "Monolingual")),
+       stimulus_type = factor(stimulus_type, levels = c("HP", "LP", "ZP"))) |> 
+mutate(p.adj = p.adjust(p.orig, method = "BH"))
+  
+
+rq2_intell2_h_adj <- merge(rq2_intell2_h_adj, 
+      BHAdjust(rq2_intell2_h_adj$p.orig, FDR = 0.05, arr = "p.orig"),
+      all = T)  |> 
+  arrange(variable) |> 
+  relocate(c(p.orig, p.adj), .after = Df) |> 
+  mutate(pvalue_text = if_else(round(p.orig,3) == 0, "< .001", 
+                                as.character(round(p.orig,3))),
+         fdr_pvalue_text = if_else(round(p.adj,3) == 0, "< .001", 
+                                    as.character(round(p.adj,3))),
+         p.orig = format(p.orig, digits = 9),
+         p.adj = format(p.adj, digits = 9),) |> 
+arrange(stimulus_type) |> 
+arrange(lang_status) |> 
+arrange(variable) 
+
+view(rq2_intell2_h_adj) 
+
+
+
+```
+
+
+
+
+
+###### testing null hypothesis : within HP or LP or ZP, B = M
+```{r}
+rq1_effort_h1_3 <- rbind(
+  summary(rq1_effort_b_hp)$coefficients$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq1_effort_b_hp)$coefficients$cond),
+           stimulus_type = "hp") |> 
+    relocate(variable, .before = Estimate),
+  
+  summary(rq1_effort_b_lp)$coefficients$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq1_effort_b_lp)$coefficients$cond),
+           stimulus_type = "lp") |> 
+    relocate(variable, .before = Estimate),
+  
+  summary(rq1_effort_b_zp)$coefficients$cond |> 
+    data.frame() |> 
+    mutate(variable = rownames(summary(rq1_effort_b_zp)$coefficients$cond),
+           stimulus_type = "zp") |> 
+    relocate(variable, .before = Estimate)
+) |> 
+  filter(variable == "bilingual") |> 
+  rename(p_value_mod = Pr...z..) |> 
+  mutate(variable = stimulus_type,
+         Odds_ratio = round(exp(Estimate),2),
+         Estimate = round(Estimate, 2),
+         Std..Error = round(Std..Error, 2),
+         z.value = round(z.value,2)
+  ) |> 
+  select(-stimulus_type) |> 
+  relocate(Odds_ratio, .after = Estimate)
+  
+
+
+rq1_effort_h1_3 |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(full_width = F, html_font = "Times New Roman")
+```
+
+
+#### ICC
+
+##### ICC: word recognition score/ inteligibility 
+```{r}
+data_icc_intel <- data_boothroyd |>
+  select(speaker_id, listener_num, lang_status,
+         stimulus_type, intelligibility) |>
+  pivot_wider(names_from = stimulus_type,
+              values_from = intelligibility) |>
+  pivot_wider(names_from = lang_status,
+              values_from = c(hp, lp, zp)) |> 
+  pivot_wider(names_from = listener_num,
+              values_from = c(hp_bilingual, hp_monolingual,
+                              lp_bilingual, lp_monolingual,
+                              zp_bilingual, zp_monolingual)) |> 
+ ungroup() 
+  
+```
+
+###### ICC results table
+> model = one-way vs two-way: Do raters evaluate more than one participant? yes then it's a two-way
+> unit = average vs single: If the unit of analysis is a mean of several ratings, unit should be changed to '"average"'; if we plan to use the mean value of 3 raters as an assessment basis, the experimental design of the reliability study should involve 3 raters, and the *“mean of k raters”* type should be selected; if we plan to use the measurement from a single rater as the basis of the actual measurement, *“single rater”* type should be selected even though the reliability experiment involves 2 or more raters.
+> type = agreement vs consistency [https://assess.com/inter-rater-reliability-vs-agreement/]
+  - If differences in judges' mean ratings are of interest, interrater '"agreement"' instead of '"consistency"' should be computed.
+  - Inter-rater reliability refers to the consistency between raters, which is slightly different than agreement.  Reliability can be quantified by a correlation coefficient.  In some cases this is the standard Pearson correlation, but in others it might be tetrachoric or intraclass (Shrout & Fleiss, 1979), especially if there are more than two raters.  If raters correlate highly, then they are consistent with each other and would have a high reliability estimate.
+  - Inter-rater agreement looks at how often the two raters give exact the same result.  There are different ways to quantify this as well, as discussed below.  Perhaps the simplest, in the two-rater case, is to simply calculate the proportion of rows where the two provided the same rating.  If there are more than two raters in a case, you will need an index of dispersion amongst their ratings.  Standard deviation and mean absolute difference are two examples.
+
+
+```{r}
+data.frame(
+  rating = c("Word recognition scores",
+             "Word recognition scores",
+             "Word recognition scores",
+             "Word recognition scores",
+             "Word recognition scores",
+             "Word recognition scores"),
+  stimuli_type = c("hp", 
+                   "hp", 
+                   "lp", 
+                   "lp", 
+                   "zp", 
+                   "zp"),
+  lang_status = c("bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual"),
+  num_speaker = c(
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$subjects
+  ),
+  num_rater = c(
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$raters
+  ),
+  ICC = c(
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$value,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$value,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$value,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$value,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$value,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$value
+  ) |> round(3),
+  lower = c(
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$lbound
+  ) |> round(3), 
+  upper = c(
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_intel |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "average", type = "agreement")$ubound
+  ) |> round(3)
+) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
+
+##### ICC: effort
+```{r}
+data_icc_effort <- data_boothroyd |>
+  select(speaker_id, listener_num, lang_status,
+         stimulus_type, effort) |>
+  pivot_wider(names_from = stimulus_type,
+              values_from = effort) |>
+  pivot_wider(names_from = lang_status,
+              values_from = c(hp, lp, zp)) |> 
+  pivot_wider(names_from = listener_num,
+              values_from = c(hp_bilingual, hp_monolingual,
+                              lp_bilingual, lp_monolingual,
+                              zp_bilingual, zp_monolingual)) |> 
+ ungroup() 
+  
+```
+
+###### ICC results table
+> model = one-way vs two-way: Do raters evaluate more than one participant? yes then it's a two-way
+> unit = average vs single: If the unit of analysis is a mean of several ratings, unit should be changed to '"average"' if we plan to use the mean value of 3 raters as an assessment basis, the experimental design of the reliability study should involve 3 raters, and the *“mean of k raters”* type should be selected; if we plan to use the measurement from a single rater as the basis of the actual measurement, *“single rater”* type should be selected even though the reliability experiment involves 2 or more raters.
+> type = agreement vs consistency [https://assess.com/inter-rater-reliability-vs-agreement/]
+  - If differences in judges' mean ratings are of interest, interrater '"agreement"' instead of '"consistency"' should be computed
+  - Inter-rater reliability refers to the consistency between raters, which is slightly different than agreement.  Reliability can be quantified by a correlation coefficient.  In some cases this is the standard Pearson correlation, but in others it might be tetrachoric or intraclass (Shrout & Fleiss, 1979), especially if there are more than two raters.  If raters correlate highly, then they are consistent with each other and would have a high reliability estimate.
+  - Inter-rater agreement looks at how often the two raters give exact the same result.  There are different ways to quantify this as well, as discussed below.  Perhaps the simplest, in the two-rater case, is to simply calculate the proportion of rows where the two provided the same rating.  If there are more than two raters in a case, you will need an index of dispersion amongst their ratings.  Standard deviation and mean absolute difference are two examples.
+
+
+```{r}
+data.frame(
+  rating = c("Listening effort",
+             "Listening effort",
+             "Listening effort",
+             "Listening effort",
+             "Listening effort",
+             "Listening effort"),
+  stimuli_type = c("hp", 
+                   "hp", 
+                   "lp", 
+                   "lp", 
+                   "zp", 
+                   "zp"),
+  lang_status = c("bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual"),
+  num_speaker = c(
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects
+  ),
+  num_rater = c(
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters
+  ),
+  ICC = c(
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value
+  ) |> round(3),
+  lower = c(
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound
+  ) |> round(3), 
+  upper = c(
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_effort |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound
+  ) |> round(3)
+) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
+##### ICC:fatigue
+
+```{r}
+data_icc_fatigue <- data_boothroyd |>
+  select(speaker_id, listener_num, lang_status,
+         stimulus_type, fatigue_post) |>
+  pivot_wider(names_from = stimulus_type,
+              values_from = fatigue_post) |>
+  pivot_wider(names_from = lang_status,
+              values_from = c(hp, lp, zp)) |> 
+  pivot_wider(names_from = listener_num,
+              values_from = c(hp_bilingual, hp_monolingual,
+                              lp_bilingual, lp_monolingual,
+                              zp_bilingual, zp_monolingual)) |> 
+ ungroup() 
+  
+```
+
+###### ICC results table
+> model = one-way vs two-way: Do raters evaluate more than one participant? yes then it's a two-way
+> unit = average vs single: If the unit of analysis is a mean of several ratings, unit should be changed to '"average"' e.g., intelligibility is average; fatigue and effort is single
+> type = agreement vs consistency [https://assess.com/inter-rater-reliability-vs-agreement/]
+  - If differences in judges' mean ratings are of interest, interrater '"agreement"' instead of '"consistency"' should be computed
+  - Inter-rater reliability refers to the consistency between raters, which is slightly different than agreement.  Reliability can be quantified by a correlation coefficient.  In some cases this is the standard Pearson correlation, but in others it might be tetrachoric or intraclass (Shrout & Fleiss, 1979), especially if there are more than two raters.  If raters correlate highly, then they are consistent with each other and would have a high reliability estimate.
+  - Inter-rater agreement looks at how often the two raters give exact the same result.  There are different ways to quantify this as well, as discussed below.  Perhaps the simplest, in the two-rater case, is to simply calculate the proportion of rows where the two provided the same rating.  If there are more than two raters in a case, you will need an index of dispersion amongst their ratings.  Standard deviation and mean absolute difference are two examples.
+
+
+```{r}
+data.frame(
+  rating = c("Listening fatigue",
+             "Listening fatigue",
+             "Listening fatigue",
+             "Listening fatigue",
+             "Listening fatigue",
+             "Listening fatigue"),
+  stimuli_type = c("hp", 
+                   "hp", 
+                   "lp", 
+                   "lp", 
+                   "zp", 
+                   "zp"),
+  lang_status = c("bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual"),
+  num_speaker = c(
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects
+  ),
+  num_rater = c(
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters
+  ),
+  ICC = c(
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value
+  ) |> round(2),
+  lower = c(
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound
+  ) |> round(2), 
+  upper = c(
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound
+  ) |> round(2)
+) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
+##### ICC: fatigue_diff
+
+```{r}
+data_icc_fatigue_diff <- data_boothroyd |>
+  select(speaker_id, listener_num, lang_status,
+         stimulus_type, fatigue_diff) |>
+  pivot_wider(names_from = stimulus_type,
+              values_from = fatigue_diff) |>
+  pivot_wider(names_from = lang_status,
+              values_from = c(hp, lp, zp)) |> 
+  pivot_wider(names_from = listener_num,
+              values_from = c(hp_bilingual, hp_monolingual,
+                              lp_bilingual, lp_monolingual,
+                              zp_bilingual, zp_monolingual)) |> 
+ ungroup() 
+  
+```
+
+###### ICC results table
+> model = one-way vs two-way: Do raters evaluate more than one participant? yes then it's a two-way
+> unit = average vs single: If the unit of analysis is a mean of several ratings, unit should be changed to '"average"' e.g., intelligibility is average; fatigue and effort is single
+> type = agreement vs consistency [https://assess.com/inter-rater-reliability-vs-agreement/]
+  - If differences in judges' mean ratings are of interest, interrater '"agreement"' instead of '"consistency"' should be computed
+  - Inter-rater reliability refers to the consistency between raters, which is slightly different than agreement.  Reliability can be quantified by a correlation coefficient.  In some cases this is the standard Pearson correlation, but in others it might be tetrachoric or intraclass (Shrout & Fleiss, 1979), especially if there are more than two raters.  If raters correlate highly, then they are consistent with each other and would have a high reliability estimate.
+  - Inter-rater agreement looks at how often the two raters give exact the same result.  There are different ways to quantify this as well, as discussed below.  Perhaps the simplest, in the two-rater case, is to simply calculate the proportion of rows where the two provided the same rating.  If there are more than two raters in a case, you will need an index of dispersion amongst their ratings.  Standard deviation and mean absolute difference are two examples.
+
+```{r}
+data.frame(
+  rating = c("Listening fatigue_diff",
+             "Listening fatigue_diff",
+             "Listening fatigue_diff",
+             "Listening fatigue_diff",
+             "Listening fatigue_diff",
+             "Listening fatigue_diff"),
+  stimuli_type = c("hp", 
+                   "hp", 
+                   "lp", 
+                   "lp", 
+                   "zp", 
+                   "zp"),
+  lang_status = c("bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual", 
+                  "bilingual", 
+                  "monolingual"),
+  num_speaker = c(
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$subjects
+  ),
+  num_rater = c(
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$raters
+  ),
+  ICC = c(
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$value
+  ) |> round(2),
+  lower = c(
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$lbound
+  ) |> round(2), 
+  upper = c(
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("hp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("lp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_bilingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound,
+    irr::icc(ratings = data_icc_fatigue_diff |> select(starts_with("zp_monolingual_")), 
+         model = "oneway", unit = "single", type = "agreement")$ubound
+  ) |> round(2)
+) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
