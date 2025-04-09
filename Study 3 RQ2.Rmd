@@ -7,6 +7,7 @@ output: html_notebook
 library(tidyverse)
 library(here)
 library(dplyr)
+library(extrafont)
 
 # https://stackoverflow.com/questions/26702205/how-to-implement-benjamini-hochberg-in-r
 # Benjamini-Hochberg correction, which allows for the FDR to be selected
@@ -759,8 +760,11 @@ bbmle::AICtab(rq2_intell1, rq2_intell2, rq2_intell3, rq2_intell4,
 ###### checking if spline is needed
 ```{r}
 rq2_intell3_noSpline  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
-                                    lextale_raw_c + stimulus_type_hp +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
                                     lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
                       dispformula = ~ lextale_raw_c + stimulus_type_hp,
@@ -768,20 +772,28 @@ rq2_intell3_noSpline  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number 
                       family = glmmTMB::beta_family())
 
 rq2_intell3_Spline_2df  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 2) 
-                                    + stimulus_type_hp +
-                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
-                                    (1 | listener_id) + 
-                                    (1 | speaker_id),
+                                bilingual + splines::ns(lextale_raw_c, df = 2) + 
+                                stimulus_type_hp +
+                                bilingual:stimulus_type_hp +
+                                bilingual:splines::ns(lextale_raw_c, df = 2) +
+                                splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
+                                bilingual:splines::ns(lextale_raw_c, 
+                                                      df = 2):stimulus_type_hp +
+                                (1 | listener_id) + 
+                                (1 | speaker_id),
                       dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
                         stimulus_type_hp,
                       data = data_boothroyd,
                       family = glmmTMB::beta_family())
 
 rq2_intell3_Spline_3df  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 3) 
-                                    + stimulus_type_hp +
+                                    bilingual + splines::ns(lextale_raw_c, df = 3) + 
+                                      stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 3) +
                                     splines::ns(lextale_raw_c, df = 3):stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 3):stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
                       dispformula = ~ splines::ns(lextale_raw_c, df = 3) + 
@@ -790,9 +802,13 @@ rq2_intell3_Spline_3df  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_numbe
                       family = glmmTMB::beta_family())
 
 rq2_intell3_Spline_4df  <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 4) 
-                                    + stimulus_type_hp +
+                                    bilingual + splines::ns(lextale_raw_c, df = 4) + 
+                                      stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 4) +
                                     splines::ns(lextale_raw_c, df = 4):stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 4):stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
                       dispformula = ~ splines::ns(lextale_raw_c, df = 4) + 
@@ -824,7 +840,7 @@ bbmle::AICtab(rq2_intell3_noSpline, rq2_intell3_Spline_2df,
 ```
 
 
-###### setting up model
+###### setting up model with no spline
 ```{r}
 #HP utterances as reference
 #bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
@@ -937,6 +953,7 @@ rq2_intell_zp_m <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
 
 summary(rq2_intell_zp_m)
 ```
+
 
 ###### hypothesis testing 
 ```{r}
@@ -1059,27 +1076,7 @@ mutate(variable = factor(variable, levels =
 view(rq2_intell_h)
 ```
 
-
-###### contrast testing: marginal means reponses
-
-```{r}
-emmeans::ref_grid(rq2_intell_hp_b)
-
-#getting marginal means given average, min and max lextale scores 
-rg_rq2 <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
-                                      c(60,70,80,90,100)))
-                            
-
-rq2_intell_pred <- emmeans::emmeans(rg_rq2, ~ stimulus_type_hp * lextale_raw_c |
-                                      bilingual,
-                                      type = "response") 
-
-# Compute contrast to find effect size between levels
-contrast_result <- emmeans::contrast(rq2_intell_pred, method = "pairwise")
-summary(contrast_result)
-```
-
-###### table HP-LP difference
+###### table marginal means
 ```{r}
 lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
   sort()
@@ -1102,64 +1099,13 @@ rq2_intell_pred <- emmeans::emmeans(rg_rq2_intell, ~ stimulus_type_hp * lextale_
          lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c) |> 
   select(-df) |> 
   filter(lextale_raw == 60 |
-           lextale_raw == 70 |
            lextale_raw == 80 |
-           lextale_raw == 90 |
            lextale_raw == 100 ) |> 
-  arrange(stimulus_type_hp)
-  
-
-view(rq2_intell_pred)
-
-rq2_intell_pred |> 
-  kableExtra::kbl() |> 
-  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
-```
-
-
-###### table lextale difference 
-```{r}
-lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
-  sort()
-
-rg_rq2_intell <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
-                                      lextale_c_values))
-
-rq2_intell_pred <- emmeans::emmeans(rg_rq2_intell, ~ stimulus_type_hp * lextale_raw_c *
-                                      bilingual,
-                                      type = "response") |> 
-  as.data.frame() |> 
-  mutate(bilingual = case_match(bilingual,
-                                0 ~ "Monolingual",
-                                1 ~ "Bilingual"),
-         response = round((response - .0125) / (.975),2),
-         SE = round((SE- .0125) / (.975),2),
-         asymp.LCL = round((asymp.LCL- .0125) / (.975),2),
-         asymp.UCL = round((asymp.UCL- .0125) / (.975),2),
-         lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c) |> 
-  select(-c(df, lextale_raw_c)) |> 
-  filter(lextale_raw == 60 |
-           lextale_raw == 70 |
-           lextale_raw == 80 |
-           lextale_raw == 90 |
-           lextale_raw == 100 ) |> 
-  pivot_wider(names_from = c(lextale_raw),
-              values_from = c(response, SE, asymp.LCL, asymp.UCL)) |> 
-  rename(`Language Status` = bilingual) |> 
-  rename(`Utterance type` = stimulus_type_hp) |> 
-  rename(`Intell based on LexTALE score as 60` = response_60) |> 
-  rename(`Intell based on LexTALE score as 70` = response_70) |> 
-  rename(`Intell based on LexTALE score as 80` = response_80) |> 
-  rename(`Intell based on LexTALE score as 90` = response_90) |> 
-  rename(`Intell based on LexTALE score as 100` = response_100) |> 
-  select(`Utterance type`, 
-         `Language Status`, 
-         `Intell based on LexTALE score as 60`,
-         `Intell based on LexTALE score as 70`,
-         `Intell based on LexTALE score as 80`,
-         `Intell based on LexTALE score as 90`,
-         `Intell based on LexTALE score as 100`)
-  
+  filter(!(lextale_raw == 60 & bilingual == "Monolingual")) |> 
+  arrange(bilingual) |> 
+  arrange(stimulus_type_hp) |> 
+  relocate(lextale_raw, .before = response) |> 
+  select(-lextale_raw_c)
 
 view(rq2_intell_pred)
 
@@ -1222,12 +1168,446 @@ p1 <- data_boothroyd |>
                                 1 ~ "Bilingual")) |> 
   filter(bilingual == "Bilingual") |> 
   ggplot() +
+  geom_jitter(
+             aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 colour = stimulus_type),
+             width = 0.2,
+             alpha = .5) +
+  geom_smooth(data = rq2_intell_graph_b,
+              aes(y = response, 
+                  ymin = response - SE,
+                  ymax = response + SE,
+                  x = lextale_raw, 
+                  colour = stimulus_type_hp),
+             alpha = .2,
+             stat = "identity") +
+  geom_text(data = sig_text, 
+            aes(y = response, 
+                x = lextale_raw_c),
+            label = c("*","*","*"),
+            size = 4) +
+  labs(x = "Proficiency on vocabolary knowledge (LexTALE scores)",
+       y = "Word recognition scores",
+       color = "Utterance type") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  theme_bw() +
+  theme(axis.line = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black"),
+        legend.position = "top", 
+        axis.title.x = element_blank(),
+        text = element_text(family = "Times New Roman", size = 13),
+        plot.margin = margin(5, 0, 5, 5)) +
+  facet_wrap(~bilingual) +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73"))
+
+#monolingual plot
+p2 <- data_boothroyd |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual")) |> 
+  filter(bilingual == "Monolingual") |> 
+  ggplot() +
+  geom_jitter(
+             aes(y = intelligibility, 
+                 x = lextale_raw, 
+                 colour = stimulus_type),
+             width = .2,
+             alpha = .5) +
+  geom_smooth(data = rq2_intell_graph_m,
+              aes(y = response, 
+                  ymin = response - SE,
+                  ymax = response + SE,
+                  x = lextale_raw, 
+                  colour = stimulus_type_hp),
+             alpha = .2,
+             stat = "identity") +
+  labs(x = "Proficiency on vocabolary knowledge (LexTALE scores)",
+       y = "Word recognition scores",
+       color = "Utterance type") +
+  scale_y_continuous(breaks = seq(0, 1, by = .2), oob = scales::squish, 
+                     limits = c(0,1), labels = scales::percent) +
+  scale_x_continuous(breaks = seq(70, 100, by = 10), 
+                     limits = c(70,100)) +
+  theme_bw() +
+  theme(axis.line = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black"),
+        legend.position = "top",
+        text = element_text(family = "Times New Roman", size = 13), 
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.margin = margin(5, 5, 5, 0)) +
+  facet_wrap(~bilingual) +
+  scale_colour_manual(labels = c("High predictability",
+                                 "Low predictability",
+                                 "Zero predictability"),
+                      values =  c("#E69F00", "#56B4E9", "#009E73"))
+
+
+a3rq2_wr_fig <- ggpubr::ggarrange(p1, p2,
+                  nrow = 1,
+                  ncol = 2, 
+                  widths = c(1.25,1),
+                  common.legend = TRUE) 
+
+ggpubr::annotate_figure(a3rq2_wr_fig,
+                        bottom = ggpubr::text_grob(
+                          "Proficiency on vocabulary knowledge (LexTALE scores)", 
+                        family = "Times",
+                        vjust = -.1)) 
+
+ggsave(here::here("figures_study3", "rq2_wr_scatterplot.jpeg"),
+       dpi = 300,
+       width = 7.5,
+       height = 4,
+       unit = "in")
+
+```
+
+###### setting up model with spline
+```{r}
+#HP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell_hp_b_spline <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + splines::ns(lextale_raw_c, df = 2) + 
+                                      stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 2) +
+                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 2):stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
+                        stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_hp_b_spline)
+
+```
+
+```{r}
+#LP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell_lp_b_spline <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + splines::ns(lextale_raw_c, df = 2) + 
+                                      stimulus_type_lp +
+                                    bilingual:stimulus_type_lp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 2) +
+                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_lp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 2):stimulus_type_lp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
+                        stimulus_type_lp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_lp_b_spline)
+```
+
+```{r}
+#ZP utterances as reference
+#bilingual = bilingual 1; monolingual 0; other coef pertain to monolinguals
+rq2_intell_zp_b_spline <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    bilingual + splines::ns(lextale_raw_c, df = 2) + 
+                                      stimulus_type_zp +
+                                    bilingual:stimulus_type_zp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 2) +
+                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_zp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 2):stimulus_type_zp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
+                        stimulus_type_zp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_zp_b_spline)
+
+
+
+```
+
+
+```{r}
+#monolingual = bilingual 0; monolingual 1; other coef pertain to bilinguals
+rq2_intell_hp_m_spline <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + splines::ns(lextale_raw_c, df = 2) + 
+                                      stimulus_type_hp +
+                                    monolingual:splines::ns(lextale_raw_c, df = 2) +
+                                    monolingual:stimulus_type_hp +
+                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
+                                    monolingual:splines::ns(lextale_raw_c, 
+                                                            df = 2):stimulus_type_hp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
+                        stimulus_type_hp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_hp_m_spline)
+
+```
+
+```{r}
+#LP utterances as reference
+#bilingual = bilingual 0; monolingual 1; other coef pertain to bilinguals
+rq2_intell_lp_m_spline <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + splines::ns(lextale_raw_c, df = 2) + 
+                                      stimulus_type_lp +
+                                    monolingual:splines::ns(lextale_raw_c, df = 2) +
+                                    monolingual:stimulus_type_lp +
+                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_lp +
+                                    monolingual:splines::ns(lextale_raw_c, 
+                                                            df = 2):stimulus_type_lp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
+                        stimulus_type_lp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_lp_m_spline)
+```
+
+```{r}
+#ZP utterances as reference
+#bilingual = bilingual 0; monolingual 1; other coef pertain to bilinguals
+rq2_intell_zp_m_spline <- glmmTMB::glmmTMB(intell_t ~ kbit2_raw_c + block_number +
+                                    monolingual + splines::ns(lextale_raw_c, df = 2) + 
+                                      stimulus_type_zp +
+                                    monolingual:splines::ns(lextale_raw_c, df = 2) +
+                                    monolingual:stimulus_type_zp +
+                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_zp +
+                                    monolingual:splines::ns(lextale_raw_c, 
+                                                            df = 2):stimulus_type_zp +
+                                    (1 | listener_id) + 
+                                    (1 | speaker_id),
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
+                        stimulus_type_zp,
+                      data = data_boothroyd,
+                      family = glmmTMB::beta_family())
+
+summary(rq2_intell_zp_m_spline)
+```
+
+
+###### hypothesis testing 
+```{r}
+#with spline
+rq2_intell_h_spline <- rbind(
+car::Anova(rq2_intell_hp_b_spline, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_b_spline, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "HP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "splines::ns(lextale_raw_c, df = 2)" |
+           variable == "bilingual:splines::ns(lextale_raw_c, df = 2)" | 
+           variable == "splines::ns(lextale_raw_c, df = 2):stimulus_type_hp" |
+           variable == "bilingual:splines::ns(lextale_raw_c, df = 2):stimulus_type_hp" ) |> 
+    mutate(lang_status = ifelse(variable == "bilingual:splines::ns(lextale_raw_c, df = 2)" |
+                                variable == "bilingual:splines::ns(lextale_raw_c, df = 2):stimulus_type_hp", 
+                                NA, lang_status),
+           stimulus_type = ifelse(variable == "splines::ns(lextale_raw_c, df = 2):stimulus_type_hp"|
+                                variable == "bilingual:splines::ns(lextale_raw_c, df = 2):stimulus_type_hp", 
+                                  NA, stimulus_type)),
+
+car::Anova(rq2_intell_lp_b_spline, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_b_spline, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "LP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "splines::ns(lextale_raw_c, df = 2)" |
+           variable == "bilingual:splines::ns(lextale_raw_c, df = 2)") |> 
+    mutate(lang_status = ifelse(variable == "bilingual:splines::ns(lextale_raw_c, df = 2)", 
+                                NA, lang_status)),
+
+car::Anova(rq2_intell_zp_b_spline, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_b_spline, type = "III")),
+           lang_status = "Monolingual",
+           stimulus_type = "ZP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "splines::ns(lextale_raw_c, df = 2)" |
+           variable == "bilingual:splines::ns(lextale_raw_c, df = 2)") |> 
+    mutate(lang_status = ifelse(variable == "bilingual:splines::ns(lextale_raw_c, df = 2)", 
+                                NA, lang_status)),
+
+car::Anova(rq2_intell_hp_m_spline, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_m_spline, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "HP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "splines::ns(lextale_raw_c, df = 2)" |
+           variable == "splines::ns(lextale_raw_c, df = 2):stimulus_type_hp") |> 
+    mutate(stimulus_type = ifelse(variable == "splines::ns(lextale_raw_c, df = 2):stimulus_type_hp", 
+                                  NA, stimulus_type)),
+
+car::Anova(rq2_intell_lp_m_spline, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_m_spline, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "LP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "splines::ns(lextale_raw_c, df = 2)"),
+
+car::Anova(rq2_intell_zp_m_spline, type = "III") |> 
+data.frame() |>  
+    rename(p.orig = Pr..Chisq.) |> 
+    mutate(variable = rownames(car::Anova(rq2_intell_hp_m_spline, type = "III")),
+           lang_status = "Bilingual",
+           stimulus_type = "ZP") |> 
+    relocate(variable, .before = Chisq) |> 
+    relocate(lang_status, .before = Chisq) |> 
+    relocate(stimulus_type, .before = Chisq) |> 
+    filter(variable == "splines::ns(lextale_raw_c, df = 2)")
+
+) |>
+mutate(variable = factor(variable, levels = 
+                               c("splines::ns(lextale_raw_c, df = 2)",
+                                 "splines::ns(lextale_raw_c, df = 2):stimulus_type_hp",
+                                 "bilingual:splines::ns(lextale_raw_c, df = 2)",
+                                 "bilingual:splines::ns(lextale_raw_c, df = 2):stimulus_type_hp")),
+       lang_status = factor(lang_status, levels = c("Bilingual", 
+                                                    "Monolingual")),
+       stimulus_type = factor(stimulus_type, levels = c("HP", "LP", "ZP")),
+       outcome = "intelligibility") |> 
+  arrange(variable)
+
+view(rq2_intell_h_spline)
+```
+
+
+
+###### table marginal means
+```{r}
+lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
+  sort()
+
+rg_rq2_intell_spline <- emmeans::ref_grid(rq2_intell_hp_b_spline, at = list(lextale_raw_c = 
+                                      lextale_c_values))
+                            
+
+rq2_intell_pred_spline <- emmeans::emmeans(rg_rq2_intell_spline, ~ stimulus_type_hp * lextale_raw_c |
+                                      bilingual,
+                                      type = "response") |> 
+  as.data.frame() |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         response = round((response - .0125) / (.975),2),
+         SE = round((SE- .0125) / (.975),2),
+         asymp.LCL = round((asymp.LCL- .0125) / (.975),2),
+         asymp.UCL = round((asymp.UCL- .0125) / (.975),2),
+         lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c) |> 
+  select(-df) |> 
+  filter(lextale_raw == 60 |
+           lextale_raw == 80 |
+           lextale_raw == 100 ) |> 
+  filter(!(lextale_raw == 60 & bilingual == "Monolingual")) |> 
+  arrange(bilingual) |> 
+  arrange(stimulus_type_hp) |> 
+  relocate(lextale_raw, .before = response) |> 
+  select(-lextale_raw_c)
+
+view(rq2_intell_pred_spline)
+
+rq2_intell_pred_spline |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+```
+
+###### graph: marginal means reponses (between 60 to 100)
+```{r}
+lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
+  sort()
+
+#getting marginal means given lextale scores between 60 to 100 by 1; average nonverbal 
+rg_rq2_intell_spline <- emmeans::ref_grid(rq2_intell_hp_b_spline, 
+                                   at = list(lextale_raw_c = lextale_c_values))
+#use the values of the centered values
+
+
+
+rq2_intell_graph_spline <- emmeans::emmeans(rg_rq2_intell_spline, ~ stimulus_type_hp * lextale_raw_c * 
+                                      bilingual,
+                                      type = "response") |> 
+  as.data.frame() |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual"),
+         response = (response - .0125) / (.975),
+         SE = (SE- .0125) / (.975),
+         asymp.LCL = (asymp.LCL- .0125) / (.975),
+         asymp.UCL = (asymp.UCL- .0125) / (.975),
+         lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c
+         ) |> 
+  relocate(lextale_raw, .after = lextale_raw_c)
+
+
+view(rq2_intell_graph_spline)
+
+rq2_intell_graph_b_spline <- rq2_intell_graph_spline |> 
+  filter(bilingual == "Bilingual")
+
+rq2_intell_graph_m_spline <- rq2_intell_graph_spline |> 
+  filter(bilingual == "Monolingual") |> 
+  filter(lextale_raw >= 70)
+
+view(rq2_intell_graph_m)
+```
+
+
+```{r}
+#bilingual plot
+sig_text <- data.frame(lextale_raw_c = c(101, 101, 101),
+                       response = c(.76, .51, .42),
+                       bilingual = c("Bilingual","Bilingual","Bilingual"),
+                       lab = c("*","*","*"))
+
+p1 <- data_boothroyd |> 
+  mutate(bilingual = case_match(bilingual,
+                                0 ~ "Monolingual",
+                                1 ~ "Bilingual")) |> 
+  filter(bilingual == "Bilingual") |> 
+  ggplot() +
   geom_point(
              aes(y = intelligibility, 
                  x = lextale_raw, 
                  colour = stimulus_type),
              alpha = .5) +
-  geom_smooth(data = rq2_intell_graph_b,
+  geom_smooth(data = rq2_intell_graph_b_spline,
               aes(y = response, 
                   ymin = response - SE,
                   ymax = response + SE,
@@ -1271,7 +1651,7 @@ p2 <- data_boothroyd |>
                  x = lextale_raw, 
                  colour = stimulus_type),
              alpha = .5) +
-  geom_smooth(data = rq2_intell_graph_m,
+  geom_smooth(data = rq2_intell_graph_m_spline,
               aes(y = response, 
                   ymin = response - SE,
                   ymax = response + SE,
@@ -1427,8 +1807,11 @@ bbmle::AICtab(rq2_effort1, rq2_effort2, rq2_effort3, rq2_effort4,
 ###### checking if spline is needed
 ```{r}
 rq2_effort3_noSpline  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
-                                    lextale_raw_c + stimulus_type_hp +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
                                     lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
                       dispformula = ~ lextale_raw_c + stimulus_type_hp,
@@ -1436,20 +1819,28 @@ rq2_effort3_noSpline  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number 
                       family = glmmTMB::beta_family())
 
 rq2_effort3_Spline_2df  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 2) 
-                                    + stimulus_type_hp +
-                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
-                                    (1 | listener_id) + 
-                                    (1 | speaker_id),
+                                bilingual + splines::ns(lextale_raw_c, df = 2) + 
+                                stimulus_type_hp +
+                                bilingual:stimulus_type_hp +
+                                bilingual:splines::ns(lextale_raw_c, df = 2) +
+                                splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
+                                bilingual:splines::ns(lextale_raw_c, 
+                                                      df = 2):stimulus_type_hp +
+                                (1 | listener_id) + 
+                                (1 | speaker_id),
                       dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
                         stimulus_type_hp,
                       data = data_boothroyd,
                       family = glmmTMB::beta_family())
 
 rq2_effort3_Spline_3df  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 3) 
-                                    + stimulus_type_hp +
+                                    bilingual + splines::ns(lextale_raw_c, df = 3) + 
+                                      stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 3) +
                                     splines::ns(lextale_raw_c, df = 3):stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 3):stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
                       dispformula = ~ splines::ns(lextale_raw_c, df = 3) + 
@@ -1458,13 +1849,16 @@ rq2_effort3_Spline_3df  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_numbe
                       family = glmmTMB::beta_family())
 
 rq2_effort3_Spline_4df  <- glmmTMB::glmmTMB(effort_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 4) 
-                                    + stimulus_type_hp +
+                                    bilingual + splines::ns(lextale_raw_c, df = 4) + 
+                                      stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 4) +
                                     splines::ns(lextale_raw_c, df = 4):stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 4):stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
-                      dispformula = ~ splines::ns(lextale_raw_c, df = 4) + 
-                        stimulus_type_hp,
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 4) + stimulus_type_hp,
                       data = data_boothroyd,
                       family = glmmTMB::beta_family())
 
@@ -1726,48 +2120,14 @@ mutate(variable = factor(variable, levels =
 view(rq2_effort_h)
 ```
 
-###### table HP-LP difference
+###### table marginal means
 ```{r}
+lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
+  sort()
+
 rg_rq2_effort <- emmeans::ref_grid(rq2_effort_hp_b, at = list(lextale_raw_c = 
-                                      c(60,70,80,90,100)))
+                                      lextale_c_values))
                             
-
-rq2_effort_pred <- emmeans::emmeans(rg_rq2_effort, ~ stimulus_type_hp * lextale_raw_c |
-                                      bilingual,
-                                      type = "response") |> 
-  as.data.frame() |> 
-  mutate(bilingual = case_match(bilingual,
-                                0 ~ "Monolingual",
-                                1 ~ "Bilingual"),
-         response = round((response - .0125) / (.975/7),2),
-         SE = round((SE- .0125) / (.975/7),2),
-         asymp.LCL = round((asymp.LCL- .0125) / (.975/7),2),
-         asymp.UCL = round((asymp.UCL- .0125) / (.975/7),2)) |> 
-  select(-df) |> 
-  pivot_wider(names_from = c(stimulus_type_hp),
-              values_from = c(response, SE, asymp.LCL, asymp.UCL)) |> 
-  mutate(`HP-LP difference` = response_hp - response_lp,
-         `HP-ZP difference` = response_hp - response_zp,
-         `LP-ZP difference` = response_lp - response_zp,
-         lextale_raw_c = round(lextale_raw_c,2)) |>
-  rename(`Language Status` = bilingual) |> 
-  rename(`LexTALE scores` = lextale_raw_c) |> 
-  select(`LexTALE scores`, `Language Status`, `HP-LP difference`,
-         `HP-ZP difference`, `LP-ZP difference`)
-  
-
-view(rq2_effort_pred)
-
-rq2_effort_pred |> 
-  kableExtra::kbl() |> 
-  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
-```
-
-
-###### table lextale difference 
-```{r}
-rg_rq2_effort <- emmeans::ref_grid(rq2_effort_hp_b, at = list(lextale_raw_c = 
-                                      c(60,70,80,90,100)))
 
 rq2_effort_pred <- emmeans::emmeans(rg_rq2_effort, ~ stimulus_type_hp * lextale_raw_c *
                                       bilingual,
@@ -1779,34 +2139,17 @@ rq2_effort_pred <- emmeans::emmeans(rg_rq2_effort, ~ stimulus_type_hp * lextale_
          response = round((response - .0125) / (.975/7),2),
          SE = round((SE- .0125) / (.975/7),2),
          asymp.LCL = round((asymp.LCL- .0125) / (.975/7),2),
-         asymp.UCL = round((asymp.UCL- .0125) / (.975/7),2)) |> 
+         asymp.UCL = round((asymp.UCL- .0125) / (.975/7),2),
+         lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c) |> 
   select(-df) |> 
-  mutate(lextale_raw_c = round(lextale_raw_c,2)) |>  
-  pivot_wider(names_from = c(lextale_raw_c),
-              values_from = c(response, SE, asymp.LCL, asymp.UCL)) |> 
-  mutate(`difference 60-70` = response_70 - response_60,
-         `difference 70-80` = response_80 - response_70,
-         `difference 80-90` = response_90 - response_80,
-         `difference 90-100` = response_100 - response_90,) |>
-  rename(`Language Status` = bilingual) |> 
-  rename(`Utterance type` = stimulus_type_hp) |> 
-  rename(`effort based on LexTALE score as 60` = response_60) |> 
-  rename(`effort based on LexTALE score as 70` = response_70) |> 
-  rename(`effort based on LexTALE score as 80` = response_80) |> 
-  rename(`effort based on LexTALE score as 90` = response_90) |> 
-  rename(`effort based on LexTALE score as 100` = response_100) |> 
-  select(`Utterance type`, 
-         `Language Status`, 
-         `effort based on LexTALE score as 60`,
-         `effort based on LexTALE score as 70`,
-         `effort based on LexTALE score as 80`,
-         `effort based on LexTALE score as 90`,
-         `effort based on LexTALE score as 100`,
-         `difference 60-70`,
-         `difference 70-80`,
-         `difference 80-90`,
-         `difference 90-100`)
-  
+  filter(lextale_raw == 60 |
+           lextale_raw == 80 |
+           lextale_raw == 100 ) |> 
+  filter(!(lextale_raw == 60 & bilingual == "Monolingual")) |> 
+  arrange(bilingual) |> 
+  arrange(stimulus_type_hp) |> 
+  relocate(lextale_raw, .before = response) |> 
+  select(-lextale_raw_c)
 
 view(rq2_effort_pred)
 
@@ -1817,9 +2160,15 @@ rq2_effort_pred |>
 
 ###### graph: marginal means reponses (between 60 to 100)
 ```{r}
+lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
+  sort()
+
 #getting marginal means given lextale scores between 60 to 100 by 1; average nonverbal 
-rg_rq2_effort <- emmeans::ref_grid(rq2_effort_hp_b, at = list(lextale_raw_c = 
-                                                         seq(60,100, by = 1.25)))
+rg_rq2_effort <- emmeans::ref_grid(rq2_effort_hp_b, 
+                                   at = list(lextale_raw_c = lextale_c_values))
+#use the values of the centered values
+
+
 
 rq2_effort_graph <- emmeans::emmeans(rg_rq2_effort, ~ stimulus_type_hp * lextale_raw_c * 
                                       bilingual,
@@ -1831,7 +2180,10 @@ rq2_effort_graph <- emmeans::emmeans(rg_rq2_effort, ~ stimulus_type_hp * lextale
          response = (response - .0125) / (.975/7),
          SE = (SE- .0125) / (.975/7),
          asymp.LCL = (asymp.LCL- .0125) / (.975/7),
-         asymp.UCL = (asymp.UCL- .0125) / (.975/7)) 
+         asymp.UCL = (asymp.UCL- .0125) / (.975/7),
+         lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c
+         ) |> 
+  relocate(lextale_raw, .after = lextale_raw_c)
 
 
 view(rq2_effort_graph)
@@ -1841,7 +2193,7 @@ rq2_effort_graph_b <- rq2_effort_graph |>
 
 rq2_effort_graph_m <- rq2_effort_graph |> 
   filter(bilingual == "Monolingual") |> 
-  filter(lextale_raw_c >= 80)
+  filter(lextale_raw >= 70)
 
 view(rq2_effort_graph_m)
 ```
@@ -1856,16 +2208,17 @@ p1 <- data_boothroyd |>
                                 1 ~ "Bilingual")) |> 
   filter(bilingual == "Bilingual") |> 
   ggplot() +
-  geom_point(
+  geom_jitter(
              aes(y = effort, 
                  x = lextale_raw, 
                  colour = stimulus_type),
+             width = .25,
              alpha = .5) +
   geom_smooth(data = rq2_effort_graph_b,
               aes(y = response, 
                   ymin = response - SE,
                   ymax = response + SE,
-                  x = lextale_raw_c, 
+                  x = lextale_raw, 
                   colour = stimulus_type_hp),
              alpha = .2,
              stat = "identity") +
@@ -1895,16 +2248,17 @@ p2 <- data_boothroyd |>
                                 1 ~ "Bilingual")) |> 
   filter(bilingual == "Monolingual") |> 
   ggplot() +
-  geom_point(
+  geom_jitter(
              aes(y = effort, 
                  x = lextale_raw, 
                  colour = stimulus_type),
+             width = .25,
              alpha = .5) +
   geom_smooth(data = rq2_effort_graph_m,
               aes(y = response, 
                   ymin = response - SE,
                   ymax = response + SE,
-                  x = lextale_raw_c, 
+                  x = lextale_raw, 
                   colour = stimulus_type_hp),
              alpha = .2,
              stat = "identity") +
@@ -1912,9 +2266,9 @@ p2 <- data_boothroyd |>
        y = "Listening effort",
        color = "Utterance type") +
   scale_y_continuous(breaks = seq(0, 6, by = 1), oob = scales::squish, 
-                     limits = c(0,6), labels = scales::percent) +
+                     limits = c(0,6)) +
   scale_x_continuous(breaks = seq(70, 100, by = 10), 
-                     limits = c(70,100)) +
+                     limits = c(70,100), oob = scales::squish) +
   theme_bw() +
   theme(axis.line = element_blank(),
         panel.grid.minor = element_blank(),
@@ -1933,22 +2287,25 @@ p2 <- data_boothroyd |>
                       values =  c("#E69F00", "#56B4E9", "#009E73"))
 
 
-a3rq2_e_fig <- ggpubr::ggarrange(p1, p2,
+a3rq2_wr_fig <- ggpubr::ggarrange(p1, p2,
                   nrow = 1,
                   ncol = 2, 
                   widths = c(1.25,1),
                   common.legend = TRUE) 
 
-ggpubr::annotate_figure(a3rq2_e_fig,
+ggpubr::annotate_figure(a3rq2_wr_fig,
                         bottom = ggpubr::text_grob(
-                          "Proficiency on vocabolary knowledge (LexTALE scores)", 
+                          "Proficiency on vocabulary knowledge (LexTALE scores)", 
                         family = "Times",
                         vjust = -.1)) 
 
+ggsave(here::here("figures_study3", "rq2_le_scatterplot.jpeg"),
+       dpi = 300,
+       width = 7.5,
+       height = 4,
+       unit = "in")
 
 ```
-
-
 
 
 ##### ----
@@ -2055,8 +2412,11 @@ bbmle::AICtab(rq2_fatigue_post1, rq2_fatigue_post2, rq2_fatigue_post3, rq2_fatig
 ###### checking if spline is needed
 ```{r}
 rq2_fatigue_post3_noSpline  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
-                                    lextale_raw_c + stimulus_type_hp +
+                                    bilingual + lextale_raw_c + stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:lextale_raw_c +
                                     lextale_raw_c:stimulus_type_hp +
+                                    bilingual:lextale_raw_c:stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
                       dispformula = ~ lextale_raw_c + stimulus_type_hp,
@@ -2064,20 +2424,28 @@ rq2_fatigue_post3_noSpline  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + b
                       family = glmmTMB::beta_family())
 
 rq2_fatigue_post3_Spline_2df  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 2) 
-                                    + stimulus_type_hp +
-                                    splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
-                                    (1 | listener_id) + 
-                                    (1 | speaker_id),
+                                bilingual + splines::ns(lextale_raw_c, df = 2) + 
+                                stimulus_type_hp +
+                                bilingual:stimulus_type_hp +
+                                bilingual:splines::ns(lextale_raw_c, df = 2) +
+                                splines::ns(lextale_raw_c, df = 2):stimulus_type_hp +
+                                bilingual:splines::ns(lextale_raw_c, 
+                                                      df = 2):stimulus_type_hp +
+                                (1 | listener_id) + 
+                                (1 | speaker_id),
                       dispformula = ~ splines::ns(lextale_raw_c, df = 2) + 
                         stimulus_type_hp,
                       data = data_boothroyd,
                       family = glmmTMB::beta_family())
 
 rq2_fatigue_post3_Spline_3df  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 3) 
-                                    + stimulus_type_hp +
+                                    bilingual + splines::ns(lextale_raw_c, df = 3) + 
+                                      stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 3) +
                                     splines::ns(lextale_raw_c, df = 3):stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 3):stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
                       dispformula = ~ splines::ns(lextale_raw_c, df = 3) + 
@@ -2086,13 +2454,16 @@ rq2_fatigue_post3_Spline_3df  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c +
                       family = glmmTMB::beta_family())
 
 rq2_fatigue_post3_Spline_4df  <- glmmTMB::glmmTMB(fatigue_post_t ~ kbit2_raw_c + block_number +
-                                    splines::ns(lextale_raw_c, df = 4) 
-                                    + stimulus_type_hp +
+                                    bilingual + splines::ns(lextale_raw_c, df = 4) + 
+                                      stimulus_type_hp +
+                                    bilingual:stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, df = 4) +
                                     splines::ns(lextale_raw_c, df = 4):stimulus_type_hp +
+                                    bilingual:splines::ns(lextale_raw_c, 
+                                                          df = 4):stimulus_type_hp +
                                     (1 | listener_id) + 
                                     (1 | speaker_id),
-                      dispformula = ~ splines::ns(lextale_raw_c, df = 4) + 
-                        stimulus_type_hp,
+                      dispformula = ~ splines::ns(lextale_raw_c, df = 4) + stimulus_type_hp,
                       data = data_boothroyd,
                       family = glmmTMB::beta_family())
 
@@ -2354,16 +2725,18 @@ mutate(variable = factor(variable, levels =
 view(rq2_fatigue_post_h)
 ```
 
-###### table HP-LP difference
+###### table marginal means
 ```{r}
+lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
+  sort()
+
 rg_rq2_fatigue_post <- emmeans::ref_grid(rq2_fatigue_post_hp_b, at = list(lextale_raw_c = 
-                                      c(60,70,80,90,100)))
+                                      lextale_c_values))
                             
 
-rq2_fatigue_post_pred <- emmeans::emmeans(rg_rq2_fatigue_post, 
-                                          ~ stimulus_type_hp * lextale_raw_c |
-                                        bilingual,
-                                        type = "response") |> 
+rq2_fatigue_post_pred <- emmeans::emmeans(rg_rq2_fatigue_post, ~ stimulus_type_hp * lextale_raw_c *
+                                      bilingual,
+                                      type = "response") |> 
   as.data.frame() |> 
   mutate(bilingual = case_match(bilingual,
                                 0 ~ "Monolingual",
@@ -2371,72 +2744,17 @@ rq2_fatigue_post_pred <- emmeans::emmeans(rg_rq2_fatigue_post,
          response = round((response - .0125) / (.975/7),2),
          SE = round((SE- .0125) / (.975/7),2),
          asymp.LCL = round((asymp.LCL- .0125) / (.975/7),2),
-         asymp.UCL = round((asymp.UCL- .0125) / (.975/7),2)) |> 
+         asymp.UCL = round((asymp.UCL- .0125) / (.975/7),2),
+         lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c) |> 
   select(-df) |> 
-  pivot_wider(names_from = c(stimulus_type_hp),
-              values_from = c(response, SE, asymp.LCL, asymp.UCL)) |> 
-  mutate(`HP-LP difference` = response_hp - response_lp,
-         `HP-ZP difference` = response_hp - response_zp,
-         `LP-ZP difference` = response_lp - response_zp,
-         lextale_raw_c = round(lextale_raw_c,2)) |>
-  rename(`Language Status` = bilingual) |> 
-  rename(`LexTALE scores` = lextale_raw_c) |> 
-  select(`LexTALE scores`, `Language Status`, `HP-LP difference`,
-         `HP-ZP difference`, `LP-ZP difference`)
-  
-
-view(rq2_fatigue_post_pred)
-
-rq2_fatigue_post_pred |> 
-  kableExtra::kbl() |> 
-  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
-```
-
-
-###### table lextale difference 
-```{r}
-rg_rq2_fatigue_post <- emmeans::ref_grid(rq2_fatigue_post_hp_b, at = list(lextale_raw_c = 
-                                      c(60,70,80,90,100)))
-
-rq2_fatigue_post_pred <- emmeans::emmeans(rg_rq2_fatigue_post, 
-                                          ~ stimulus_type_hp * lextale_raw_c *
-                                          bilingual,
-                                          type = "response") |> 
-  as.data.frame() |> 
-  mutate(bilingual = case_match(bilingual,
-                                0 ~ "Monolingual",
-                                1 ~ "Bilingual"),
-         response = round((response - .0125) / (.975/7),2),
-         SE = round((SE- .0125) / (.975/7),2),
-         asymp.LCL = round((asymp.LCL- .0125) / (.975/7),2),
-         asymp.UCL = round((asymp.UCL- .0125) / (.975/7),2)) |> 
-  select(-df) |> 
-  mutate(lextale_raw_c = round(lextale_raw_c,2)) |>  
-  pivot_wider(names_from = c(lextale_raw_c),
-              values_from = c(response, SE, asymp.LCL, asymp.UCL)) |> 
-  mutate(`difference 60-70` = response_70 - response_60,
-         `difference 70-80` = response_80 - response_70,
-         `difference 80-90` = response_90 - response_80,
-         `difference 90-100` = response_100 - response_90,) |>
-  rename(`Language Status` = bilingual) |> 
-  rename(`Utterance type` = stimulus_type_hp) |> 
-  rename(`fatigue_post based on LexTALE score as 60` = response_60) |> 
-  rename(`fatigue_post based on LexTALE score as 70` = response_70) |> 
-  rename(`fatigue_post based on LexTALE score as 80` = response_80) |> 
-  rename(`fatigue_post based on LexTALE score as 90` = response_90) |> 
-  rename(`fatigue_post based on LexTALE score as 100` = response_100) |> 
-  select(`Utterance type`, 
-         `Language Status`, 
-         `fatigue_post based on LexTALE score as 60`,
-         `fatigue_post based on LexTALE score as 70`,
-         `fatigue_post based on LexTALE score as 80`,
-         `fatigue_post based on LexTALE score as 90`,
-         `fatigue_post based on LexTALE score as 100`,
-         `difference 60-70`,
-         `difference 70-80`,
-         `difference 80-90`,
-         `difference 90-100`)
-  
+  filter(lextale_raw == 60 |
+           lextale_raw == 80 |
+           lextale_raw == 100 ) |> 
+  filter(!(lextale_raw == 60 & bilingual == "Monolingual")) |> 
+  arrange(bilingual) |> 
+  arrange(stimulus_type_hp) |> 
+  relocate(lextale_raw, .before = response) |> 
+  select(-lextale_raw_c)
 
 view(rq2_fatigue_post_pred)
 
@@ -2447,14 +2765,19 @@ rq2_fatigue_post_pred |>
 
 ###### graph: marginal means reponses (between 60 to 100)
 ```{r}
-#getting marginal means given lextale scores between 60 to 100 by 1; average nonverbal 
-rg_rq2_fatigue_post <- emmeans::ref_grid(rq2_fatigue_post_hp_b, at = list(lextale_raw_c = 
-                                                         seq(60,100, by = 1.25)))
+lextale_c_values <- unique(data_boothroyd$lextale_raw_c) |> 
+  sort()
 
-rq2_fatigue_post_graph <- emmeans::emmeans(rg_rq2_fatigue_post, 
-                                           ~ stimulus_type_hp * lextale_raw_c * 
-                                            bilingual,
-                                            type = "response") |> 
+#getting marginal means given lextale scores between 60 to 100 by 1; average nonverbal 
+rg_rq2_fatigue_post <- emmeans::ref_grid(rq2_fatigue_post_hp_b, 
+                                   at = list(lextale_raw_c = lextale_c_values))
+#use the values of the centered values
+
+
+
+rq2_fatigue_post_graph <- emmeans::emmeans(rg_rq2_fatigue_post, ~ stimulus_type_hp * lextale_raw_c * 
+                                      bilingual,
+                                      type = "response") |> 
   as.data.frame() |> 
   mutate(bilingual = case_match(bilingual,
                                 0 ~ "Monolingual",
@@ -2462,7 +2785,10 @@ rq2_fatigue_post_graph <- emmeans::emmeans(rg_rq2_fatigue_post,
          response = (response - .0125) / (.975/7),
          SE = (SE- .0125) / (.975/7),
          asymp.LCL = (asymp.LCL- .0125) / (.975/7),
-         asymp.UCL = (asymp.UCL- .0125) / (.975/7)) 
+         asymp.UCL = (asymp.UCL- .0125) / (.975/7),
+         lextale_raw = mean(data_boothroyd$lextale_raw) + lextale_raw_c
+         ) |> 
+  relocate(lextale_raw, .after = lextale_raw_c)
 
 
 view(rq2_fatigue_post_graph)
@@ -2472,7 +2798,7 @@ rq2_fatigue_post_graph_b <- rq2_fatigue_post_graph |>
 
 rq2_fatigue_post_graph_m <- rq2_fatigue_post_graph |> 
   filter(bilingual == "Monolingual") |> 
-  filter(lextale_raw_c >= 80)
+  filter(lextale_raw >= 70)
 
 view(rq2_fatigue_post_graph_m)
 ```
@@ -2487,21 +2813,22 @@ p1 <- data_boothroyd |>
                                 1 ~ "Bilingual")) |> 
   filter(bilingual == "Bilingual") |> 
   ggplot() +
-  geom_point(
+  geom_jitter(
              aes(y = fatigue_post, 
                  x = lextale_raw, 
                  colour = stimulus_type),
+             width = .25,
              alpha = .5) +
   geom_smooth(data = rq2_fatigue_post_graph_b,
               aes(y = response, 
                   ymin = response - SE,
                   ymax = response + SE,
-                  x = lextale_raw_c, 
+                  x = lextale_raw, 
                   colour = stimulus_type_hp),
              alpha = .2,
              stat = "identity") +
   labs(x = "Proficiency on vocabolary knowledge (LexTALE scores)",
-       y = "Listening fatigue",
+       y = "Listening fatigue_post",
        color = "Utterance type") +
   scale_y_continuous(breaks = seq(0, 6, by = 1), oob = scales::squish, 
                      limits = c(0,6)) +
@@ -2526,26 +2853,27 @@ p2 <- data_boothroyd |>
                                 1 ~ "Bilingual")) |> 
   filter(bilingual == "Monolingual") |> 
   ggplot() +
-  geom_point(
+  geom_jitter(
              aes(y = fatigue_post, 
                  x = lextale_raw, 
                  colour = stimulus_type),
+             width = .25,
              alpha = .5) +
   geom_smooth(data = rq2_fatigue_post_graph_m,
               aes(y = response, 
                   ymin = response - SE,
                   ymax = response + SE,
-                  x = lextale_raw_c, 
+                  x = lextale_raw, 
                   colour = stimulus_type_hp),
              alpha = .2,
              stat = "identity") +
   labs(x = "Proficiency on vocabolary knowledge (LexTALE scores)",
-       y = "Listening fatigue",
+       y = "Listening fatigue_post",
        color = "Utterance type") +
   scale_y_continuous(breaks = seq(0, 6, by = 1), oob = scales::squish, 
-                     limits = c(0,6), labels = scales::percent) +
+                     limits = c(0,6)) +
   scale_x_continuous(breaks = seq(70, 100, by = 10), 
-                     limits = c(70,100)) +
+                     limits = c(70,100), oob = scales::squish) +
   theme_bw() +
   theme(axis.line = element_blank(),
         panel.grid.minor = element_blank(),
@@ -2564,18 +2892,23 @@ p2 <- data_boothroyd |>
                       values =  c("#E69F00", "#56B4E9", "#009E73"))
 
 
-a3rq2_e_fig <- ggpubr::ggarrange(p1, p2,
+a3rq2_wr_fig <- ggpubr::ggarrange(p1, p2,
                   nrow = 1,
                   ncol = 2, 
                   widths = c(1.25,1),
                   common.legend = TRUE) 
 
-ggpubr::annotate_figure(a3rq2_e_fig,
+ggpubr::annotate_figure(a3rq2_wr_fig,
                         bottom = ggpubr::text_grob(
-                          "Proficiency on vocabolary knowledge (LexTALE scores)", 
+                          "Proficiency on vocabulary knowledge (LexTALE scores)", 
                         family = "Times",
                         vjust = -.1)) 
 
+ggsave(here::here("figures_study3", "rq2_lf_scatterplot.jpeg"),
+       dpi = 300,
+       width = 7.5,
+       height = 4,
+       unit = "in")
 
 ```
 
@@ -2622,11 +2955,67 @@ rq2_h_adj |>
 
 ```
 
+```{r}
+rq2_h_adj_spline <- rbind(
+  rq2_intell_h_spline,
+  rq2_effort_h,
+  rq2_fatigue_post_h
+) |> 
+  relocate(outcome, .before = variable) |> 
+  mutate(outcome = factor(outcome, levels = c("intelligibility", "effort",
+                                              "fatigue"))) |> 
+  mutate(p.adj = p.adjust(p.orig, method = "BH"))
+  
+
+rq2_h_adj_spline <- merge(rq2_h_adj_spline, 
+      BHAdjust(rq2_h_adj_spline$p.orig, FDR = 0.05, arr = "p.orig"),
+      all = T)  |> 
+  arrange(stimulus_type) |> 
+  arrange(lang_status) |> 
+  arrange(variable) |> 
+  arrange(outcome) |> 
+  relocate(c(p.orig, p.adj), .after = Df) |> 
+  mutate(pvalue_text = if_else(round(p.orig,3) == 0, "< .001", 
+                                as.character(round(p.orig,3))),
+         fdr_pvalue_text = if_else(round(p.adj,3) == 0, "< .001", 
+                                    as.character(round(p.adj,3))),
+         p.orig = format(p.orig, digits = 9),
+         p.adj = format(p.adj, digits = 9),) 
+
+view(rq2_h_adj_spline) 
+
+rq2_h_adj_spline |> 
+  select(outcome, variable, lang_status, stimulus_type,
+         Chisq, Df, pvalue_text, fdr_pvalue_text, significant_after_FDR) |> 
+  mutate(Chisq = round(Chisq,2)) |> 
+  kableExtra::kbl() |> 
+  kableExtra::kable_classic(html_font = "Times New Roman", full_width = F)
+
+```
+
+
 ##### ----
 
 
 #----- extra ----
+###### contrast testing: marginal means reponses
 
+```{r}
+emmeans::ref_grid(rq2_intell_hp_b)
+
+#getting marginal means given average, min and max lextale scores 
+rg_rq2 <- emmeans::ref_grid(rq2_intell_hp_b, at = list(lextale_raw_c = 
+                                      c(60,70,80,90,100)))
+                            
+
+rq2_intell_pred <- emmeans::emmeans(rg_rq2, ~ stimulus_type_hp * lextale_raw_c |
+                                      bilingual,
+                                      type = "response") 
+
+# Compute contrast to find effect size between levels
+contrast_result <- emmeans::contrast(rq2_intell_pred, method = "pairwise")
+summary(contrast_result)
+```
 
 ### ---- 2-way interaction; 2 dataset
 ##### model: word recognition score/ intelligibility  
